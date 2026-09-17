@@ -1,0 +1,35 @@
+# pf-killswitch.conf — leak-proof kill-switch for qbittorrent/sonarr/radarr.
+#
+# gluetun's whole selling point was: if the tunnel drops, the torrent client
+# loses ALL connectivity rather than falling back to your real IP.
+#
+# This used to be a ruleset loaded INSIDE the vpn jail. Confirmed live (2026-09-14)
+# that doesn't work at all: FreeBSD's pf is not vnet/jail-aware -- `pfctl`
+# inside even a VNET jail with every allow.* flag thrown at it fails with
+# "DIOCADDRULE: Operation not permitted". So this is appended to the HOST's
+# own /etc/pf.conf instead (after the jail-NAT rule in pf-nat.conf.tmpl —
+# pf.conf requires nat/rdr before filter rules), and enforces the kill-switch
+# at the one place that's actually allowed to filter: the host's WAN NIC.
+#
+# The logic: qbittorrent/sonarr/radarr's defaultrouter is the vpn jail's own
+# IP (set by create_vpn_stack), never the bridge gateway directly. As long as
+# the WireGuard tunnel is up (confirmed live -- with `Table` left at
+# wg-quick's default, AllowedIPs=0.0.0.0/0 makes it install 0.0.0.0/1 +
+# 128.0.0.0/1 as the vpn jail's OWN most-specific routes), their forwarded
+# traffic is captured into wg0 by the vpn jail's own routing table before it
+# ever reaches this rule. If the tunnel drops, those two routes vanish with
+# the interface and the vpn jail's only remaining path for that traffic is
+# back out its plain bridge gateway route -- unencapsulated, still carrying
+# the confined jails' own source IPs, re-emitted on the vpn jail's OWN
+# bridge-facing interface (e0a_<jail>, the host-visible half of its epair --
+# NOT the shared bridge macro: confirmed live that net.link.bridge.pfil_member
+# has to be considered, and that filtering the shared bridge interface can't
+# distinguish "qbittorrent legitimately reaching the vpn jail" from "vpn jail
+# leaking qbittorrent's packet back onto the bridge" since both are the same
+# (source, dest-family) pair on the same wire -- only the PER-JAIL epair leg
+# tells them apart). Destination is explicitly exempted so the confined
+# jails can still reach the vpn jail itself (the one legitimate hop) --
+# confirmed live this rule needs NO "in"/"out" direction qualifier (adding
+# one broke the match entirely against this address-family/list syntax).
+
+block drop quick on e0a_{{VPN_JAIL_NAME}} from { {{VPN_CONFINED_IPS}} } to ! {{VPN_JAIL_IP}}

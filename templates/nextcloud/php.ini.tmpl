@@ -1,0 +1,27 @@
+; Nextcloud PHP tuning — drop-in at /usr/local/etc/php/nextcloud.ini (loaded by
+; both the FPM pool and the CLI that runs occ/cron). Values follow Nextcloud's
+; own admin-manual recommendations for a real deployment.
+memory_limit = 512M
+upload_max_filesize = 16G
+post_max_size = 16G
+max_execution_time = 3600
+max_input_time = 3600
+output_buffering = Off
+date.timezone = {{TZ}}
+
+; OPcache — required by Nextcloud; these are its recommended settings.
+opcache.enable = 1
+opcache.enable_cli = 1
+opcache.interned_strings_buffer = 16
+opcache.max_accelerated_files = 10000
+opcache.memory_consumption = 128
+opcache.save_comments = 1
+opcache.revalidate_freq = 60
+opcache.jit = 1255
+opcache.jit_buffer_size = 128M
+
+; APCu local cache (also on CLI so occ/cron share it).
+apc.enable_cli = 1
+
+; Imagick for HEIC/preview generation (photos).
+extension = imagick

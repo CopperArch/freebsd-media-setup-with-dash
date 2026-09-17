@@ -1,0 +1,53 @@
+#!/bin/sh
+#
+# PROVIDE: seerr
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+#
+# Add the following to rc.conf(5) or use sysrc to enable:
+# seerr_enable="YES"
+#
+# No FreeBSD package exists for Seerr/Jellyseerr -- this rc.d script is
+# hand-written (matching the shape of the *arr ports' own rc.d scripts,
+# e.g. prowlarr's) because build-seerr.sh builds it from source instead.
+
+. /etc/rc.subr
+
+name=seerr
+rcvar=seerr_enable
+load_rc_config $name
+
+: ${seerr_enable:="NO"}
+: ${seerr_dir:="/usr/local/jellyseerr"}
+: ${seerr_pid_dir:="/var/run/seerr"}
+
+pidfile="${seerr_pid_dir}/${name}_daemon.pid"
+pidfile_child="${seerr_pid_dir}/${name}_child.pid"
+command="/usr/sbin/daemon"
+
+start_precmd="${name}_precmd"
+seerr_precmd() {
+    install -d "${seerr_pid_dir}"
+    touch /var/log/seerr.log
+
+    # Runs as root, not a dedicated user: daemon(8)'s -u ("switch user
+    # before exec") reliably fails here ("failed to set user environment")
+    # for a manually pw useradd'd account, for reasons that didn't resolve
+    # after matching every attribute of a working *arr port's own service
+    # account (home dir, shell, login class) -- not worth more time chasing
+    # given this jail is already its own isolation boundary, same tradeoff
+    # the dashboard server itself already makes elsewhere in this project.
+    #
+    # daemon(8)'s own -o flag, not `>> file 2>&1` in rc_flags: whether that
+    # shell-redirection syntax actually gets interpreted (vs. passed through
+    # as literal argv tokens) isn't reliable across rc.subr invocation paths
+    # -- -o is a native flag daemon(8) itself implements, no ambiguity.
+    # Matters here specifically because, without a real persistently-open
+    # output target, Node's own logger hits a broken pipe the moment nothing
+    # is left reading its stdout/stderr and then spins at 100% CPU forever
+    # retrying the same failing write -- confirmed live (truss showed a
+    # tight write(2) EPIPE retry loop) before adding this.
+    rc_flags="-r -f -p ${pidfile_child} -P ${pidfile} -o /var/log/seerr.log ${seerr_dir}/seerr-start.sh ${rc_flags}"
+}
+
+run_rc_command "$1"

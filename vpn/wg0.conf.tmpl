@@ -1,0 +1,41 @@
+# wg0.conf — WireGuard tunnel for the `vpn` jail.
+#
+# This is the FreeBSD-native replacement for the gluetun container. FreeBSD has
+# kernel WireGuard (if_wg) since 14.x, so the tunnel runs in-kernel; wg-quick
+# (wireguard-tools) just configures it. Load with:
+#
+#     sysrc wireguard_enable=YES wireguard_interfaces="wg0"
+#     service wireguard start          # inside the vpn jail
+#
+# Most commercial providers (Mullvad, Surfshark, PIA, ProtonVPN...) give you a
+# WireGuard config directly — paste its values into the profile and this
+# template renders them here. Unlike OpenVPN/gluetun there is no username/
+# password; WireGuard authenticates with keypairs.
+
+[Interface]
+# Private key for THIS peer — generate once with `wg genkey`, keep it 0600.
+PrivateKey = {{WG_PRIVATE_KEY}}
+# The tunnel address your provider assigned you.
+Address = {{WG_ADDRESS}}
+# Resolve DNS through the tunnel so lookups don't leak to your ISP.
+DNS = {{WG_DNS}}
+# Table left at wg-quick's default ("auto"): with AllowedIPs=0.0.0.0/0 below,
+# that's what makes wg-quick install this as the vpn jail's own most-specific
+# route, so qbittorrent/sonarr/radarr's forwarded traffic actually goes out
+# wg0 instead of the plain bridge gateway. (An earlier version of this file
+# set Table=off, relying on a pf kill-switch running INSIDE this jail to force
+# the routing instead -- confirmed live that pf can't run in a jail at all, so
+# routing has to do this job for real; the kill-switch is now a HOST-side pf
+# rule in pf-killswitch.conf.tmpl that only catches the case where wg0 is down
+# and this jail falls back to its own plain default route.)
+MTU = 1420
+
+[Peer]
+PublicKey = {{WG_PEER_PUBLIC_KEY}}
+# Provider endpoint (host:port). Rotate this to change exit location — the
+# nightly routine's vpn_rotate step swaps it from your provider's server list.
+Endpoint = {{WG_ENDPOINT}}
+# Route everything through the tunnel.
+AllowedIPs = 0.0.0.0/0, ::/0
+# Keep NAT mappings alive so the tunnel doesn't silently die behind CGNAT.
+PersistentKeepalive = 25

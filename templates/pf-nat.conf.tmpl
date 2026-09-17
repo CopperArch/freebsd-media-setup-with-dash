@@ -1,0 +1,15 @@
+# pf-nat.conf — NAT the jail bridge out to the internet.
+#
+# FreeBSD doesn't forward or NAT by default the way Docker's iptables
+# MASQUERADE does for its bridge network. Without this, every jail on
+# bastille0 -- not just the VPN-confined ones -- has no path to the internet
+# at all: `pkg install` (DNS included) fails outright, because the host's
+# own resolver lives on a different network than the jails' private subnet
+# and nothing routes between them. This has to be loaded on the HOST before
+# any jail's first `pkg install`, independently of the VPN kill-switch
+# (vpn/pf-killswitch.conf.tmpl), which is scoped to the vpn jail itself.
+
+ext_if   = "{{WAN_IF}}"
+jail_net = "{{SUBNET}}.0/24"
+
+nat on $ext_if from $jail_net to any -> ($ext_if)

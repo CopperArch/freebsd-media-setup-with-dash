@@ -1,0 +1,23 @@
+# Installed at /usr/local/etc/devd/drive-hotplug.conf -- devd(8) loads every
+# *.conf under here automatically, no registration step needed beyond a
+# `service devd restart`.
+#
+# Matches a newly attached WHOLE disk only (cdev ends in digits: da0, ada1,
+# nvd0, nda0), never a partition/slice (da0p1, da0s1a never match the `$`
+# anchor) -- so a disk that's merely being repartitioned doesn't re-trigger
+# this on every GEOM event it causes.
+#
+# Priority 150, not some low number: devd stops at the FIRST matching notify
+# block for a given event -- it does not run every block whose conditions
+# pass. The stock /etc/devd/autofs.conf ships a notify 100 rule that matches
+# system=GEOM/subsystem=DEV with no further filter at all (any CREATE or
+# DESTROY, any device), so at any priority below 100 this rule would simply
+# never be reached for the exact events we care about. Confirmed empirically
+# with `devd -d -d` -- the autofs rule's action ran and nothing after it did.
+notify 150 {
+	match "system"		"GEOM";
+	match "subsystem"	"DEV";
+	match "type"		"CREATE";
+	match "cdev"		"(da|ada|nvd|nda)[0-9]+$";
+	action			"/usr/local/freebsd-media-setup/scripts/drive-hotplug.sh $cdev";
+};

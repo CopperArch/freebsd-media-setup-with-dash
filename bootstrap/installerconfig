@@ -1,0 +1,61 @@
+# installerconfig — unattended bsdinstall for the media-server desktop.
+#
+# bsdinstall is FreeBSD's official installer, so "the installer" here is the
+# real, robust base-system installer rather than a bespoke one. Drop this file
+# on the install media as /etc/installerconfig (or boot the ISO built by
+# build-iso.sh, which embeds it) and the base OS installs unattended onto a ZFS
+# root, then the embedded post-install script pulls this repo and runs the KDE
+# + stack bootstrap.
+#
+# Everything above the `#!/bin/sh` line is bsdinstall's declarative preamble.
+# Everything below runs in the freshly installed system's chroot.
+
+# ── declarative preamble ────────────────────────────────────────────────
+PARTITIONS="DEFAULT"
+DISTRIBUTIONS="kernel.txz base.txz"
+# ZFS root, mirror if two disks present, single otherwise. Adjust the disk
+# list / swap to your hardware; `auto ZFS` in the TUI is the interactive twin.
+export ZFSBOOT_VDEV_TYPE=stripe
+export ZFSBOOT_DISKS="ada0"
+export ZFSBOOT_SWAP_SIZE=8g
+export nonInteractive="YES"
+
+#!/bin/sh
+# ── post-install (runs in the new system) ───────────────────────────────
+set -e
+
+# Network + time so the first-boot pkg fetches work.
+sysrc hostname="copperarch-media"
+sysrc ifconfig_DEFAULT="DHCP"
+sysrc sshd_enable="YES"
+sysrc ntpd_enable="YES"
+sysrc zfs_enable="YES"
+
+# A local admin the desktop logs in as (matches the Linux edition's "single
+# local user"). Change the name via the profile later; password is set on
+# first boot so it isn't baked into the image.
+pw useradd -n copper -c "CopperArch" -m -G wheel,operator,video -s /bin/sh
+
+# Bootstrap pkg and grab just enough to fetch + run the first-boot script.
+# Guarded like the git clone below: no network at install time must degrade
+# to "base OS only, first-boot hook skipped", not a blocking installer error.
+env ASSUME_ALWAYS_YES=YES pkg bootstrap -f || true
+env ASSUME_ALWAYS_YES=YES pkg install -y git || true
+
+# Pull the repo and schedule the KDE + stack bootstrap to run once, on first
+# boot, when the network and ZFS are fully up.
+git clone https://github.com/CopperArch/freebsd-media-setup-with-dash.git \
+    /usr/local/freebsd-media-setup 2>/dev/null || true
+
+cat > /etc/rc.local <<'FIRSTBOOT'
+#!/bin/sh
+# One-shot: build the desktop + prerequisites, then remove itself.
+if [ -x /usr/local/freebsd-media-setup/bootstrap/firstboot-kde.sh ]; then
+    /usr/local/freebsd-media-setup/bootstrap/firstboot-kde.sh \
+        > /var/log/firstboot-kde.log 2>&1
+fi
+rm -f /etc/rc.local
+FIRSTBOOT
+chmod +x /etc/rc.local
+
+echo "Base install done. Reboot: KDE Plasma + Bastille bootstrap on first boot."

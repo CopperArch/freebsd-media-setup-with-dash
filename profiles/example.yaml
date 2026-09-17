@@ -1,0 +1,72 @@
+meta:
+  installer: freebsd-media-setup-with-dash
+  note: |
+    Fill this in and pass with `--profile profiles/example.yaml`. Secrets are
+    blank on purpose — chmod 600 once you add them. WireGuard replaces the old
+    gluetun username/password: paste the keys from your provider's wg config.
+
+# identity / network
+user: copper
+lan_ip: 192.168.1.50            # this box's LAN IP (Caddy + WebUIs bind here)
+lan_cidr: 192.168.1.0/24
+host_ip: 192.168.1.50           # what Plex advertises
+jail_subnet: 10.17.0            # private /24 for the jails
+jail_release: 15.1-RELEASE
+timezone: Europe/London
+
+# domains (optional; leave "" to skip public exposure)
+domain: ""
+jellyfin_public_url: ""
+
+# storage — host ZFS paths, nullfs-mounted read-only into Plex/Jellyfin and
+# read-write into the *arr/torrent jails.
+# Leave media_pool blank to auto-detect: the installer finds any disks that
+# aren't backing the OS pool and stripes them into one new pool at
+# /mnt/storage. Set it explicitly (e.g. /mnt/storage) to skip auto-detection
+# and use a pool/path you already created yourself.
+media_pool: ""
+# Optional EXTRA media storage carved out of the OS disk itself, as a
+# zroot/media dataset — used alongside media_pool, not instead of it (the OS
+# disk's own space already belongs to zroot, so there's no separate pool to
+# make here). Normally left blank and set interactively during install.
+media_pool_extra: ""
+nextcloud_data: /mnt/nextcloud-data
+
+# Nextcloud (replaces Immich — photos/files). Set a domain for public HTTPS via
+# the front Caddy jail, or leave blank for LAN-only. Passwords auto-generate if
+# blank when you use with_generated_secrets; set your own here otherwise.
+use_nextcloud: true
+nextcloud_domain: ""            # e.g. cloud.example.com
+nc_admin_user: admin
+nc_admin_password: ""
+nc_db_password: ""
+
+# VPN — WireGuard (from your provider's exported wg config)
+wg_private_key: ""              # `wg genkey` value your provider issued you
+wg_address: 10.2.0.2/32         # tunnel address the provider assigned
+wg_dns: 10.2.0.1
+wg_peer_public_key: ""          # provider server's public key
+wg_endpoint: "vpn.example.com:51820"
+wg_endpoint_ip: ""              # bare IP of that endpoint (for the pf killswitch)
+wg_endpoint_port: "51820"
+vpn_rotate_hourly: true
+
+# components (untick anything you don't want)
+use_media_stack: true
+use_vpn_stack: true
+use_dashboard: true
+use_daily_routine: true
+use_alerts: false
+
+# secrets
+plex_claim: ""                  # claim.plex.tv token (optional, first run only)
+qbit_user: admin
+qbit_password: ""               # generated if left blank
+
+# alerts (only if use_alerts: true)
+smtp_host: ""
+smtp_port: "587"
+smtp_user: ""
+smtp_pass: ""
+mail_from: ""
+mail_to: ""
