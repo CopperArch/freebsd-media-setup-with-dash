@@ -3,6 +3,16 @@
 Project version lives in `VERSION`. Bumped on every change made to this
 source tree from here on, per the user's request (2026-09-26).
 
+## 0.3.0 - 2026-09-26
+- First GitHub publish: `github.com/CopperArch/CopperArch-FreeBSD-Media`
+  (public, `main` default branch). Fixed a stale `LICENSE` copyright line
+  that had been copied from the Linux sibling project's boilerplate.
+- `templates/dashboard/dashboard-pane.sh`: the tmux wrap added in 0.2.0 had
+  no fallback if `tmux` isn't installed — `exec tmux ...` would have failed
+  outright instead of degrading gracefully. Added a `command -v tmux`
+  guard (mirrors the same fix made to the Linux edition and the live box's
+  copy the same day).
+
 ## 0.2.0 - 2026-09-26
 - `templates/dashboard/dashboard-pane.sh`: agent panes (claude, opencode, oa,
   mm, gpt, gm, hy, ds) now run under `tmux new-session -A`, mirroring the
