@@ -1,0 +1,273 @@
+# installerconfig — unattended bsdinstall for the media-server desktop.
+#
+# bsdinstall is FreeBSD's official installer, so "the installer" here is the
+# real, robust base-system installer rather than a bespoke one. Drop this file
+# on the install media as /etc/installerconfig (or boot the ISO built by
+# build-iso.sh, which embeds it) and the base OS installs unattended onto a ZFS
+# root, then the machine reboots into a two-phase first boot: the desktop +
+# Bastille substrate are built automatically, and then the stack installer's
+# interactive wizard starts ON THE CONSOLE so the person installing enters
+# everything that needs a human decision (passwords, app logins, VPN keys,
+# public access) right there.
+#
+# Everything above the `#!/bin/sh` line is bsdinstall's declarative preamble
+# (evaluated by sh(1), so the disk-picking logic below runs at INSTALL time on
+# the target machine). Everything below runs in the freshly installed system's
+# chroot.
+
+# ── declarative preamble ────────────────────────────────────────────────
+PARTITIONS="DEFAULT"
+DISTRIBUTIONS="kernel.txz base.txz"
+export ZFSBOOT_SWAP_SIZE=8g
+export nonInteractive="YES"
+
+# ZFS root on the boot disk, picked at INSTALL time on the target machine --
+# never baked in at build time, because the right answer depends on the
+# hardware this media happens to be booted on:
+#
+#   * internal disks first (ada/nda/nvd = SATA/NVMe, vtbd = Xen virtio), USB
+#     da(4) disks only as a last resort;
+#   * ALWAYS skips the device this media booted from -- dd'ing the ISO to a
+#     USB stick makes that stick show up as a da(4) disk, and installing
+#     onto it would destroy the installer itself. The stick is identified
+#     deterministically: the live environment's root is an iso9660
+#     filesystem whose volume label glabel maps back to the provider;
+#   * two internal disks build a MIRROR root pool; one disk builds a plain
+#     stripe (bsdinstall's own convention for `auto ZFS`).
+#
+# If nothing sensible is found, ZFSBOOT_DISKS ends up empty and bsdinstall
+# falls back to asking -- a visible pause, never a silent wrong-target wipe.
+pick_boot_disks() {
+    root_dev="$(mount | awk '$3 == "/" { print $1; exit }')"
+    boot_label="${root_dev#/dev/iso9660/}"
+    boot_disk=""
+    if [ -n "$boot_label" ] && [ "$boot_label" != "$root_dev" ]; then
+        boot_disk="$(glabel status 2>/dev/null | awk -v l="$boot_label" '
+            tolower($1) == tolower(l) || tolower($1) == "iso9660/" tolower(l) {
+                d = $3
+                sub(/[ps][0-9]+$/, "", d)
+                print d
+                exit
+            }')"
+    fi
+    internal=""
+    usb=""
+    for d in $(sysctl -n kern.disks 2>/dev/null); do
+        case "$d" in
+            cd*|fd*|md*|mmcsd*)  continue ;;
+            ada*|nda*|nvd*|vtbd*) [ "$d" = "$boot_disk" ] || internal="$internal $d" ;;
+            da*)                  [ "$d" = "$boot_disk" ] || usb="$usb $d" ;;
+        esac
+    done
+    set -- $internal
+    if [ $# -ge 2 ]; then
+        # Two or more internal disks: mirror the first two (a mirrored root
+        # for the OS; extra disks belong in the media pool the installer
+        # offers to build later, not in the boot pool).
+        echo "mirror $1 $2"
+    elif [ $# -eq 1 ]; then
+        echo "stripe $1"
+    elif [ -n "$boot_disk" ]; then
+        # No internal disk at all. Only offer da(4) disks when the boot
+        # media was POSITIVELY identified and excluded -- otherwise we
+        # would be guessing which da(4) device is the installer stick, and
+        # guessing wrong destroys it. An empty answer makes bsdinstall
+        # pause and ask, which is the correct outcome.
+        set -- $usb
+        if [ $# -ge 2 ]; then
+            echo "mirror $1 $2"
+        elif [ $# -eq 1 ]; then
+            echo "stripe $1"
+        fi
+    fi
+}
+
+_POOL_PLAN="$(pick_boot_disks)"
+export ZFSBOOT_VDEV_TYPE="$(echo "$_POOL_PLAN" | awk '{print $1}')"
+export ZFSBOOT_DISKS="$(echo "$_POOL_PLAN" | cut -d ' ' -f2-)"
+if [ -z "$ZFSBOOT_DISKS" ]; then
+    echo "WARNING: no installable disk found automatically --"
+    echo "         bsdinstall will pause and ask which disk to use."
+fi
+
+# If a FINISHED CopperArch install already exists on the target disk(s)
+# (e.g. the USB stick was left plugged in after a completed install and
+# the machine just booted the media again), NEVER silently reinstall over
+# it: say so, wait 30 seconds for an explicit override, and otherwise
+# reboot with instructions to remove the stick. A first install on a blank
+# disk is untouched by this check (nothing imports, nothing matches).
+if [ -n "$ZFSBOOT_DISKS" ]; then
+    if zpool import -f -N -o cachefile=none zroot >/dev/null 2>&1; then
+        if [ -d /zroot/usr/local/freebsd-media-setup ]; then
+            zpool export zroot 2>/dev/null
+            echo "=================================================================="
+            echo " An installed CopperArch system already exists on $ZFSBOOT_DISKS."
+            echo " Remove this USB stick and reboot to boot the installed system."
+            echo " Press Enter within 30 seconds to WIPE it and reinstall anyway."
+            echo "=================================================================="
+            if read -t 30 _reinstall; then
+                echo "Reinstall requested -- wiping and reinstalling..."
+            else
+                echo ""
+                echo "No input -- not reinstalling. Remove the USB stick now;"
+                echo "rebooting in 5 seconds."
+                sleep 5
+                reboot
+            fi
+        else
+            zpool export zroot 2>/dev/null
+        fi
+    fi
+fi
+
+#!/bin/sh
+# ── post-install (runs in the new system) ───────────────────────────────
+set -e
+
+# Network + time so the first-boot pkg fetches work.
+sysrc hostname="copperarch-media"
+sysrc ifconfig_DEFAULT="DHCP"
+sysrc sshd_enable="YES"
+sysrc ntpd_enable="YES"
+sysrc zfs_enable="YES"
+
+# A local admin the desktop logs in as (matches the Linux edition's "single
+# local user"). Passwords for root and this user are set interactively on
+# first boot -- nothing credential-shaped is ever baked into the image.
+pw useradd -n copper -c "CopperArch" -m -G wheel,operator,video -s /bin/sh
+
+# Ship the bundled repo off the install media onto the new system, so the
+# first boot doesn't depend on GitHub being reachable. This script runs in
+# the new system's chroot; the install media is still attached as a cd9660
+# device carrying the volume label COPPERARCH (set by build-iso.sh).
+# NOTE: the umount at the end is best-effort and MUST NOT be fatal: from
+# inside a chroot, umount(8) cannot always match the kernel's mount list
+# (EINVAL) even though the mount and the copy succeeded -- leaving the
+# media mounted until reboot is harmless, dying here was not.
+if [ ! -d /usr/local/freebsd-media-setup ]; then
+    mkdir -p /media
+    if mount -t cd9660 /dev/iso9660/COPPERARCH /media 2>/dev/null; then
+        cp -a /media/usr/local/freebsd-media-setup /usr/local/
+        umount /media 2>/dev/null || true
+    fi
+fi
+[ -f /usr/local/freebsd-media-setup/install.py ] \
+    && echo "Bundled setup repo copied from install media."
+
+# Fallback when the bundled copy is missing (e.g. this installerconfig was
+# dropped onto a stock disc1): pull the repo from GitHub instead. No network
+# at install time must degrade to "base OS only, first-boot hook skipped",
+# not a blocking installer error.
+if [ ! -d /usr/local/freebsd-media-setup ]; then
+    env ASSUME_ALWAYS_YES=YES pkg bootstrap -f || true
+    env ASSUME_ALWAYS_YES=YES pkg install -y git || true
+    git clone https://github.com/CopperArch/freebsd-media-setup-with-dash.git \
+        /usr/local/freebsd-media-setup 2>/dev/null || true
+fi
+
+cat > /etc/rc.local <<'FIRSTBOOT'
+#!/bin/sh
+# Two-phase first boot, driven from the console:
+#
+#   phase 1  build the desktop + jail substrate (firstboot-kde.sh --
+#            idempotent, retried on the next boot if it fails)
+#   phase 2  set root/copper passwords, then run the stack installer's
+#            interactive wizard right here on this console so the person
+#            installing enters everything that needs a human decision:
+#            app logins, VPN WireGuard keys, dynamic-DNS / public access.
+#
+# /etc/rc.local removes itself only after phase 2 ran. Power-loss or a
+# failed phase simply means the remaining work happens on the next boot.
+
+MARKER=/var/db/freebsd-media-setup/.firstboot-done
+ATTEMPTS=/var/db/freebsd-media-setup/.firstboot-attempts
+mkdir -p /var/db/freebsd-media-setup
+
+if [ ! -f "$MARKER" ]; then
+    n=$(cat "$ATTEMPTS" 2>/dev/null || echo 0)
+    n=$((n + 1))
+    echo "$n" > "$ATTEMPTS"
+    if /usr/local/freebsd-media-setup/bootstrap/firstboot-kde.sh \
+        > /var/log/firstboot-kde.log 2>&1; then
+        touch "$MARKER"
+    elif [ "$n" -ge 3 ]; then
+        echo
+        echo "First-boot build FAILED $n times -- not rebooting again."
+        echo "See /var/log/firstboot-kde.log, then either:"
+        echo "  rm $ATTEMPTS && reboot                # retry from scratch"
+        echo "  python3.11 /usr/local/freebsd-media-setup/install.py --cli"
+        exit 0
+    else
+        echo
+        echo "First-boot build failed (attempt $n of 3) -- rebooting to retry."
+        echo "Progress log: /var/log/firstboot-kde.log"
+        sleep 5
+        reboot
+        exit 0
+    fi
+fi
+
+# Keep the console in charge during setup: the login screen must not steal
+# the foreground virtual terminal from the wizard. It is re-enabled (and
+# comes up after the final reboot) below.
+sysrc sddm_enable=NO >/dev/null 2>&1
+service sddm stop >/dev/null 2>&1 || true
+
+echo
+echo "=================================================================="
+echo " Base system + desktop build are done. Two quick passwords, then"
+echo " the CopperArch setup wizard starts -- it asks for everything that"
+echo " needs a human decision (app logins, VPN keys, public access) and"
+echo " builds the whole stack: jails, VPN tunnel + kill-switch, Nextcloud,"
+echo " dashboard, nightly self-heal. Ctrl-C to pause; it returns on reboot."
+echo "=================================================================="
+echo
+echo "Set the root password (system administration / SSH):"
+passwd root || echo "  (skipped -- set it later with: passwd root)"
+echo
+echo "Set the password for the desktop user 'copper':"
+passwd copper || echo "  (skipped -- set it later with: passwd copper)"
+echo
+echo "=================================================================="
+echo " Starting the setup wizard (answers are saved to a profile at"
+echo " /root/.config/freebsd-media-setup/profile-used.yaml)."
+echo "=================================================================="
+python3.11 /usr/local/freebsd-media-setup/install.py --cli >> /var/log/copperarch-setup.log 2>&1
+rc=$?
+tail -30 /var/log/copperarch-setup.log
+
+if [ "$rc" != 0 ]; then
+    # The wizard failed (profile validation, Ctrl-C, power loss). Keep
+    # rc.local AND the marker so the whole wizard re-runs on the next
+    # boot -- the promise on the banner above is that it comes back
+    # until it succeeds.
+    echo
+    echo "Setup exited rc=$rc. It will re-run on the next reboot."
+    echo "To fix and re-run right now:"
+    echo "  python3.11 /usr/local/freebsd-media-setup/install.py --cli"
+    echo "Then reboot when it succeeds."
+    exit 0
+fi
+
+# Setup done: restore the desktop login and reboot into it.
+sysrc sddm_enable=YES >/dev/null 2>&1
+rm -f /etc/rc.local "$MARKER" "$ATTEMPTS"
+echo
+echo "Setup finished. Log: /var/log/copperarch-setup.log"
+echo "Profile: /root/.config/freebsd-media-setup/profile-used.yaml"
+echo "Re-run or adjust later with:  python3.11 /usr/local/freebsd-media-setup/install.py --cli"
+echo "                              (or: /usr/local/freebsd-media-setup/rebuild <profile.yaml>)"
+echo
+echo "Press Enter to reboot into the desktop..."
+read _dummy
+reboot
+FIRSTBOOT
+chmod +x /etc/rc.local
+
+echo "Base install done. The installer will reboot; first boot builds the"
+echo "desktop and then runs the setup wizard on the console."
+echo ""
+echo "IMPORTANT: when the installer says it will reboot, REMOVE THIS USB"
+echo "STICK (or detach the install ISO) so the machine boots from its own"
+echo "disk. If it boots this media again by mistake, the installer will"
+echo "detect the finished system and refuse to reinstall over it."

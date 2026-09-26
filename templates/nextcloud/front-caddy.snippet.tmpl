@@ -1,0 +1,10 @@
+# Appended to the FRONT caddy jail's Caddyfile (the stack reverse proxy) so
+# nextcloud.<domain> reaches the nextcloud jail. TLS is terminated here; the
+# app jail speaks plain :80. If NEXTCLOUD_DOMAIN is blank this block is skipped.
+{{NEXTCLOUD_DOMAIN}} {
+	reverse_proxy {{NC_JAIL_IP}}:80
+	# Nextcloud sends large PROPFIND/upload bodies; don't clip them.
+	request_body {
+		max_size 16GB
+	}
+}

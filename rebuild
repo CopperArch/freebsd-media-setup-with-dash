@@ -1,0 +1,33 @@
+#!/bin/sh
+# rebuild — re-apply the media server from a saved profile, idempotently.
+#
+# In the spirit of CopperArch BSD's `bsd-rebuild`: one command that converges
+# the running box back onto the declared state. Every step is safe to re-run —
+# existing jails are detected and skipped, rc knobs are re-asserted, the pf
+# kill-switch and daily routine are re-rendered. Run it after editing the
+# profile or stack.yaml, or on a drifted machine to self-heal on demand.
+#
+#   ./rebuild                       # uses ./profile.yaml if present
+#   ./rebuild path/to/profile.yaml
+#   ./rebuild --dry-run             # show what would change
+set -eu
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PROFILE=""
+DRY=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run) DRY="--dry-run" ;;
+        *.yaml|*.yml) PROFILE="$arg" ;;
+    esac
+done
+[ -z "$PROFILE" ] && [ -f "$HERE/profile.yaml" ] && PROFILE="$HERE/profile.yaml"
+
+PY="$(command -v python3.11 || command -v python3 || echo python3)"
+
+set -- --cli --yes $DRY
+[ -n "$PROFILE" ] && set -- "$@" --profile "$PROFILE" --save-profile "$PROFILE"
+
+echo ">> rebuild: $PY install.py $*"
+exec "$PY" "$HERE/install.py" "$@"

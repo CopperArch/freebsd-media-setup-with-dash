@@ -1,0 +1,185 @@
+# stack.yaml — the whole media/VPN server as FreeBSD jails.
+#
+# This is the FreeBSD replacement for the two docker-compose.yml files.
+# Each `jail:` entry is one thin Bastille jail. The installer (or the pure-sh
+# render-stack.sh) reads this file and issues the matching `bastille` commands.
+#
+# Networking model
+# ────────────────
+#   * Most jails sit on the private loopback-ish bridge and are reached on the
+#     HOST's LAN IP via Caddy (reverse proxy) — the same shape as the compose
+#     `ports:` + Caddy stack on Linux.
+#   * The `vpn` jail is the ONLY jail with a WireGuard tunnel (if_wg). The
+#     `qbittorrent` jail has NO default route of its own: it is parented to the
+#     vpn jail's network and a pf kill-switch (vpn/pf-killswitch.conf) drops any
+#     packet that would leave by a path other than wg0. This is exactly what
+#     gluetun did with `network_mode: service:gluetun`, done the FreeBSD way.
+#
+# Double-brace tokens (SUBNET, MEDIA_POOL, ...) are rendered from the profile
+# at install time by the same renderer the Linux edition used.
+
+release: 15.1-RELEASE           # bastille bootstrap target; matches the host
+bridge:  bastille0              # VNET bridge the jails attach to
+subnet:  10.17.0                # jail /24; .1 is the bridge, apps get .10+
+
+# ── media stack (no VPN) ─────────────────────────────────────────────────
+jails:
+  - name: jellyfin
+    ip: "{{SUBNET}}.10"
+    pkg: [jellyfin]
+    rc:  { jellyfin_enable: "YES" }
+    services: [jellyfin]
+    ports: [8096]
+    mounts:
+      - { host: "{{MEDIA_POOL}}", jail: /data/media, ro: true }
+    devfs: [dri]                # /dev/dri passthrough for VAAPI transcode
+    # .NET/CoreCLR refuses to start in a jail at all (HRESULT 0x8007FF02)
+    # without this -- the pkg's own post-install message says so. Every
+    # .NET-based app in this stack (jellyfin, prowlarr, sonarr, radarr)
+    # needs it; the C++/Python/Go/Node ones (plex, bazarr, seerr, caddy,
+    # qbittorrent) don't.
+    allow_mlock: true
+    note: replaces jellyfin/jellyfin container
+
+  - name: plex
+    ip: "{{SUBNET}}.11"
+    pkg: [plexmediaserver-plexpass]
+    rc:  { plexmediaserver_plexpass_enable: "YES" }
+    services: [plexmediaserver_plexpass]
+    ports: [32400]
+    mounts:
+      - { host: "{{MEDIA_POOL}}", jail: /data/media, ro: true }
+      - { host: "{{NEXTCLOUD_DATA}}", jail: /data/nextcloud-data, ro: true }
+    devfs: [dri]
+    note: replaces plexinc/pms-docker (was network_mode host)
+
+  - name: prowlarr
+    ip: "{{SUBNET}}.12"
+    pkg: [prowlarr]
+    rc:  { prowlarr_enable: "YES" }
+    services: [prowlarr]
+    ports: [9696]
+    allow_mlock: true           # .NET/CoreCLR -- see the jellyfin entry above
+    note: indexer manager; feeds sonarr/radarr
+
+  - name: bazarr
+    ip: "{{SUBNET}}.13"
+    pkg: [bazarr]
+    rc:  { bazarr_enable: "YES" }
+    services: [bazarr]
+    ports: [6767]
+
+  - name: seerr
+    ip: "{{SUBNET}}.14"
+    # No FreeBSD package exists for Seerr/Jellyseerr at all (pkg search comes
+    # up empty under every name) -- these are build-from-source dependencies,
+    # not the app itself. lib/steps.py's build_seerr_from_source step (runs
+    # right after this jail is created) clones, patches, builds, and installs
+    # a hand-written rc.d service -- see templates/seerr-build/.
+    pkg: [node22, npm-node22, git, python311, gmake]
+    ports: [5055]
+    note: replaces ghcr.io/seerr-team/seerr; built from source, see build_seerr_from_source
+
+  - name: caddy
+    ip: "{{SUBNET}}.15"
+    pkg: [caddy]
+    rc:  { caddy_enable: "YES" }
+    services: [caddy]
+    ports: [80, 443]
+    config: caddy/Caddyfile      # rendered from templates/, mounts to jail
+    note: reverse proxy; terminates TLS in front of every app above
+
+  # Nextcloud replaces what Immich did on Linux (Immich has no FreeBSD build).
+  # Photos/Memories give the phone-photo-backup + timeline; Files/sync give the
+  # rest. PostgreSQL lives in its own jail (as immich-postgres did); php-fpm +
+  # an in-jail Caddy + local redis live in the nextcloud jail; the front caddy
+  # jail reverse-proxies nextcloud.<domain> to it.
+  - name: nextcloud-db
+    ip: "{{SUBNET}}.16"
+    pkg: [postgresql17-server]
+    rc:  { postgresql_enable: "YES" }
+    services: [postgresql]
+    ports: [5432]
+    # Classic (non-VNET) jails have no SysV IPC namespace by default.
+    # postgresql17-server's initdb needs it for its main shared-memory
+    # segment (shmget) even though dynamic/worker shared memory uses posix
+    # mmap -- without this, initdb dies with "could not create shared
+    # memory segment: Function not implemented" and removes the data
+    # directory it just created. Confirmed live: this is what actually
+    # broke every Nextcloud install once the ownership bug above was fixed.
+    sysvipc: true
+    mounts:
+      # NEXTCLOUD_DB_DATA is a SIBLING host path, not a child of
+      # NEXTCLOUD_DATA -- see the comment on NEXTCLOUD_DB_DATA in
+      # lib/profile.py. This used to be "{{NEXTCLOUD_DATA}}/db", which put
+      # Postgres's data underneath the exact host dataset that
+      # install-nextcloud.sh's `chown -R www:www` on the Nextcloud app
+      # jail's data dir recurses into, silently corrupting Postgres's data
+      # ownership on every install.
+      - { host: "{{NEXTCLOUD_DB_DATA}}", jail: /var/db/postgres, ro: false }
+    note: PostgreSQL for Nextcloud; initdb + role/db created by install-nextcloud.sh
+
+  - name: nextcloud
+    ip: "{{SUBNET}}.17"
+    # No separate php83-fpm package -- the fpm SAPI (php-fpm binary + the
+    # php_fpm rc.d script referenced below) ships inside the base php83
+    # package on this ports snapshot. Listing it as its own pkg 404s and
+    # takes the whole atomic install down with it.
+    pkg: [nextcloud-php83, php83, php83-pgsql, php83-pdo_pgsql,
+          php83-gd, php83-curl, php83-zip, php83-mbstring, php83-intl,
+          php83-bcmath, php83-gmp, php83-opcache, php83-pecl-APCu,
+          php83-pecl-imagick, php83-pecl-redis, php83-exif, php83-fileinfo,
+          php83-posix, php83-sockets, php83-ftp, php83-sysvsem,
+          caddy, redis, ImageMagick7]
+    rc:  { php_fpm_enable: "YES", redis_enable: "YES", caddy_enable: "YES" }
+    services: [redis, php-fpm, caddy]
+    ports: [80]
+    devfs: [dri]                 # HW-accelerated preview generation if present
+    mounts:
+      - { host: "{{NEXTCLOUD_DATA}}", jail: /data/nextcloud-data, ro: false }
+    config: nextcloud            # whole templates/nextcloud/ dir renders in
+    note: php-fpm + in-jail Caddy + redis; occ install run by install-nextcloud.sh
+
+# ── VPN stack ────────────────────────────────────────────────────────────
+# The gluetun replacement. `vpn` owns wg0; `qbittorrent` is confined to it.
+vpn:
+  jail: vpn
+  ip: "{{SUBNET}}.20"
+  pkg: [wireguard-tools]
+  kmod: [if_wg]
+  wg_conf: vpn/wg0.conf          # rendered from the profile (provider creds)
+  killswitch: vpn/pf-killswitch.conf
+  rc: { wireguard_enable: "YES", wireguard_interfaces: "wg0", gateway_enable: "YES" }
+
+  confined:
+    - name: qbittorrent
+      ip: "{{SUBNET}}.21"
+      pkg: [qbittorrent-nox]
+      rc:  { qbittorrent_enable: "YES" }
+      services: [qbittorrent]
+      ports: [8080]              # WebUI, reachable on LAN via caddy only
+      route_via: vpn             # default route = vpn jail's wg0; no leak path
+      mounts:
+        - { host: "{{MEDIA_POOL}}", jail: /data/media, ro: false }
+
+    - name: sonarr
+      ip: "{{SUBNET}}.22"
+      pkg: [sonarr]
+      rc:  { sonarr_enable: "YES" }
+      services: [sonarr]
+      ports: [8989]
+      route_via: vpn
+      allow_mlock: true         # .NET/CoreCLR -- see the jellyfin entry above
+      mounts:
+        - { host: "{{MEDIA_POOL}}", jail: /data/media, ro: false }
+
+    - name: radarr
+      ip: "{{SUBNET}}.23"
+      pkg: [radarr]
+      rc:  { radarr_enable: "YES" }
+      services: [radarr]
+      ports: [7878]
+      route_via: vpn
+      allow_mlock: true         # .NET/CoreCLR -- see the jellyfin entry above
+      mounts:
+        - { host: "{{MEDIA_POOL}}", jail: /data/media, ro: false }
