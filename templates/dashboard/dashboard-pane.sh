@@ -31,7 +31,29 @@ AGENT_PANES=(claude opencode oa mm gpt gm hy ds)
 if [[ -z "${DASHBOARD_PANE_TMUX:-}" ]] && command -v tmux >/dev/null 2>&1 \
    && printf '%s\n' "${AGENT_PANES[@]}" | grep -qx "$PROG"; then
     export DASHBOARD_PANE_TMUX=1
-    exec tmux new-session -A -s "dash-$PROG" "$0" "$PROG" "$@"
+    # Highlight-to-copy. The agents turn on mouse tracking and tmux passes
+    # that through to ttyd's xterm.js, so a drag went to the app and nothing
+    # could ever be selected. With tmux owning the mouse, a left-drag (or
+    # double/triple click) always selects, and releasing copies straight to
+    # the desktop clipboard for pasting into a terminal, editor, etc. Plain
+    # clicks and the scroll wheel still reach the app.
+    CLIP=""
+    if command -v wl-copy >/dev/null 2>&1; then CLIP="wl-copy"
+    elif command -v xclip >/dev/null 2>&1; then CLIP="xclip -selection clipboard"
+    elif command -v xsel  >/dev/null 2>&1; then CLIP="xsel -ib"
+    fi
+    # ';' separates top-level tmux commands; '\;' chains inside a binding.
+    COPY_OPTS=(';' set-option mouse on)
+    if [[ -n "$CLIP" ]]; then
+        COPY_OPTS+=(
+          ';' bind-key -T root MouseDrag1Pane select-pane -t = '\;' copy-mode -M
+          ';' bind-key -T copy-mode    MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$CLIP"
+          ';' bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "$CLIP"
+          ';' bind-key -T root DoubleClick1Pane select-pane -t = '\;' copy-mode -M '\;' send-keys -X select-word '\;' send-keys -X copy-pipe-and-cancel "$CLIP"
+          ';' bind-key -T root TripleClick1Pane select-pane -t = '\;' copy-mode -M '\;' send-keys -X select-line '\;' send-keys -X copy-pipe-and-cancel "$CLIP"
+        )
+    fi
+    exec tmux new-session -A -s "dash-$PROG" "$0" "$PROG" "$@" "${COPY_OPTS[@]}"
 fi
 
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:3b}"
