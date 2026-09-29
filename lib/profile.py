@@ -65,6 +65,11 @@ class Profile:
     use_dashboard: bool = True
     use_daily_routine: bool = True
     use_alerts: bool = False
+    # Local AI: Z.ai's official open-weights GLM via FreeBSD's ollama package,
+    # downloaded only on machines where this is enabled. "auto" picks by RAM
+    # at install time (glm-4.7-flash, 19 GB, needs ~24 GB RAM; else glm4:9b).
+    use_local_glm: bool = False
+    glm_model: str = "auto"
     # nightly self-heal schedule -- also changeable live from the dashboard
     # (status-dashboard-server.py's /api/schedule), which rewrites root's
     # crontab directly; these fields are just what a fresh install seeds it

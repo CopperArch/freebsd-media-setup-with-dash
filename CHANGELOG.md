@@ -3,6 +3,20 @@
 Project version lives in `VERSION`. Bumped on every change made to this
 source tree from here on, per the user's request (2026-09-26).
 
+## 0.4.0 - 2026-09-29
+- New opt-in **Local AI (GLM)** component, mirroring the Linux edition
+  (CopperArch-Linux-Media PR #3). Off by default (`use_local_glm: false`);
+  the interactive `--cli` run asks. When enabled, `install_local_ai` installs
+  FreeBSD's `misc/ollama` package, configures its rc.d service via `sysrc`
+  (runs as the profile user, loopback-only, 10m keep-alive, models on the
+  media pool) and pulls Z.ai's official GLM sized to RAM: `glm-4.7-flash`
+  (19 GB) on >=24 GB, otherwise `glm4:9b` (5.5 GB); `glm_model` overrides.
+- Dashboard: new `glm`/`askglm` panes, shown only where the installer wrote
+  `~/.config/status-dashboard/local-ai.env`; opening them by URL elsewhere
+  explains how to enable instead of starting a multi-GB download.
+- `templates/daily-routine.sh` section 7: nightly `ollama pull` of the chosen
+  GLM model, only on machines with Local AI enabled.
+
 ## 0.3.0 - 2026-09-26
 - First GitHub publish: `github.com/CopperArch/CopperArch-FreeBSD-Media`
   (public, `main` default branch). Fixed a stale `LICENSE` copyright line
