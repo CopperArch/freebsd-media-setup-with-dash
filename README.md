@@ -30,6 +30,7 @@ nightly routine that keep the box healed.
 | Updates | `apt/dnf/pacman` | **pkg** + `freebsd-update`, with ZFS-snapshot rollback |
 | OS installer | (n/a — app only) | **bsdinstall** (scripted `installerconfig`) + first-boot KDE build |
 | Desktop | your existing session | **KDE Plasma 6** on X11 via SDDM |
+| Local AI (opt-in) | Ollama official installer + systemd user unit | **`pkg install ollama`** (CPU + Vulkan) + its rc.d service; same GLM model choice (`glm-4.7-flash` on ≥24 GB RAM, else `glm4:9b`), off unless `use_local_glm: true` |
 
 ## Why base FreeBSD + KDE rather than GhostBSD
 

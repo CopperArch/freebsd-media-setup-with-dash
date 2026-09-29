@@ -61,6 +61,7 @@ class Platform:
         # links (OpenRouter, VPN providers, ...) with one persistent,
         # always-logged-in profile. No Helium port exists on FreeBSD.
         "librewolf":     "librewolf",
+        "ollama":        "ollama",              # local LLM runner (CPU + Vulkan), only if use_local_glm
         "cloudflared":   "cloudflared",         # Cloudflare Tunnel client, only if public_access=cloudflare
     }
 

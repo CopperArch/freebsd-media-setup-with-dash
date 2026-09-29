@@ -55,6 +55,8 @@ use_vpn_stack: true
 use_dashboard: true
 use_daily_routine: true
 use_alerts: false
+use_local_glm: false   # true = install ollama + GLM on this machine
+glm_model: auto        # auto | glm-4.7-flash | glm4:9b
 
 # secrets
 plex_claim: ""                  # claim.plex.tv token (optional, first run only)

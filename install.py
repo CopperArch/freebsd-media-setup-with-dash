@@ -102,6 +102,13 @@ def main() -> int:
             profile.openrouter_api_key = ask("OpenRouter API key",
                                              profile.openrouter_api_key, secret=True)
 
+        log("\n=== Local AI (optional) ===\n"
+            "Z.ai's GLM, free and offline via ollama, sized to this machine's "
+            "RAM (19 GB download on 24 GB+ RAM, otherwise 5.5 GB).")
+        profile.use_local_glm = ask(
+            "Install local AI (GLM)? y/N",
+            "y" if profile.use_local_glm else "n").strip().lower() in ("y", "yes")
+
         if profile.use_vpn_stack and not (profile.wg_private_key
                                           and profile.wg_peer_public_key
                                           and profile.wg_endpoint):

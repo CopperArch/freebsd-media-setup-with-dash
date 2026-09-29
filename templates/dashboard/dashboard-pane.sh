@@ -58,6 +58,14 @@ fi
 
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:3b}"
 
+# Local GLM pane -- Z.ai's official open-weights model via ollama. The
+# installer writes local-ai.env (GLM_MODEL=, sized to this machine's RAM) only
+# when "Local AI" was chosen; without it the GLM panes are hidden/refuse.
+AI_ENV="$HOME/.config/status-dashboard/local-ai.env"
+[ -f "$AI_ENV" ] && . "$AI_ENV"
+GLM_MODEL="${GLM_MODEL:-glm-4.7-flash}"
+GLM_KEEPALIVE="${GLM_KEEPALIVE:-10m}"
+
 # Model slugs + OpenRouter key. ai-panes-check.py keeps the managed block in
 # this same file current nightly (from daily-routine.sh), swapping a free tier
 # to a cheap paid variant rather than dropping a pane, so any of these can be
@@ -139,6 +147,23 @@ case "$PROG" in
         elif ! curl -sf -m 5 -o /dev/null "http://$OLLAMA_HOST/api/version"; then
             echo "ollama is not running (service ollama start)"
         else echo "> $QUERY"; echo; ollama run "$OLLAMA_MODEL" "$QUERY"; fi
+        press_enter ;;
+    glm)
+        hr "GLM (local) — $GLM_MODEL"; export OLLAMA_HOST=127.0.0.1:11434
+        if [[ ! -f "$AI_ENV" ]]; then
+            echo "Local AI isn't enabled on this machine — re-run the installer"
+            echo "with use_local_glm: true to download it here."
+        elif ! curl -sf -m 5 -o /dev/null "http://$OLLAMA_HOST/api/version"; then
+            echo "ollama is not running — start it with:  service ollama start"
+        else ollama run --keepalive "$GLM_KEEPALIVE" "$GLM_MODEL"; fi
+        fallback "ollama" ;;
+    askglm)
+        QUERY="$*"; export OLLAMA_HOST=127.0.0.1:11434; hr "Ask $GLM_MODEL"
+        if [[ ! -f "$AI_ENV" ]]; then echo "Local AI isn't enabled on this machine"
+        elif [[ -z "${QUERY// }" ]]; then echo "no question given"
+        elif ! curl -sf -m 5 -o /dev/null "http://$OLLAMA_HOST/api/version"; then
+            echo "ollama is not running (service ollama start)"
+        else echo "> $QUERY"; echo; ollama run --keepalive "$GLM_KEEPALIVE" "$GLM_MODEL" "$QUERY"; fi
         press_enter ;;
     askds)
         QUERY="$*"; hr "Ask DeepSeek — $DEEPSEEK_MODEL (near-free, verify at openrouter.ai)"

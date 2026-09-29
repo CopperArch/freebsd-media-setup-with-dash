@@ -345,4 +345,19 @@ else
     log "  [SKIP] ai-panes-check.py not installed"
 fi
 
+# ─── 7. Local AI model refresh (only if Local AI was chosen at install) ─────
+# `ollama pull` only transfers changed layers, so this is cheap when current.
+AI_ENV="$ROOT/.config/status-dashboard/local-ai.env"
+if [ -f "$AI_ENV" ] && command -v ollama >/dev/null 2>&1; then
+    banner "Local AI Model Update"
+    GLM_MODEL=$(sed -n 's/^GLM_MODEL=//p' "$AI_ENV")
+    OLLAMA_USER=$(sysrc -n ollama_user 2>/dev/null || echo root)
+    if [ -n "$GLM_MODEL" ] && su -l "$OLLAMA_USER" -c \
+            "env OLLAMA_HOST=127.0.0.1:11434 ollama pull $GLM_MODEL" >/dev/null 2>&1; then
+        log "  [OK]   $GLM_MODEL current"
+    else
+        log "  [WARN] ollama pull $GLM_MODEL failed (is 'service ollama status' running?)"
+    fi
+fi
+
 banner "Daily Routine finished on $(hostname)"

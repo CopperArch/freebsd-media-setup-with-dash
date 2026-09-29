@@ -934,6 +934,78 @@ def install_dashboard(ctx: Ctx, accept) -> tuple[bool, str]:
     return _exec(ctx, "install dashboard", do)
 
 
+# ── 8. local AI (GLM via ollama) — opt-in only ───────────────────────────────
+# Official sources only: FreeBSD's misc/ollama package and the ollama.com
+# model library (which mirrors zai-org's weights). "Free GLM-5.x installer"
+# repos on GitHub are malware lures -- never wire one in here.
+GLM_BIG, GLM_SMALL = "glm-4.7-flash", "glm4:9b"   # 19 GB / 5.5 GB downloads
+GLM_BIG_MIN_RAM_GB = 24
+
+
+def _ram_gb() -> float:
+    p = run(["sysctl", "-n", "hw.physmem"], quiet=True)
+    try:
+        return int(p.stdout.strip()) / 1024 ** 3
+    except (ValueError, AttributeError):
+        return 0.0
+
+
+def pick_glm_model(profile: Profile) -> str:
+    if profile.glm_model and profile.glm_model != "auto":
+        return profile.glm_model
+    return GLM_BIG if _ram_gb() >= GLM_BIG_MIN_RAM_GB else GLM_SMALL
+
+
+def install_local_ai(ctx: Ctx, accept) -> tuple[bool, str]:
+    if not ctx.profile.use_local_glm:
+        return True, "not selected in profile"
+    model = pick_glm_model(ctx.profile)
+    size = {GLM_BIG: "19 GB", GLM_SMALL: "5.5 GB"}.get(model, "size unknown")
+    if not accept(f"Install ollama and download GLM model '{model}' ({size}, "
+                  f"{_ram_gb():.0f} GB RAM detected)?"):
+        return False, "declined"
+    def do(c):
+        import shutil, time
+        user = c.profile.user
+        home = Path(c.v["HOME"])
+        ok, msg = c.plat.install(c.sudo, ["ollama"])
+        if not ok:
+            return False, f"pkg install ollama {msg}"
+        # Models on the media pool when there is one, never the boot pool.
+        pool = Path(c.profile.media_pool or "")
+        models = pool / "ollama-models" if pool.is_dir() else home / ".ollama/models"
+        c.sudo.run(["install", "-d", "-o", user, "-g", user, str(models)], timeout=30)
+        free_gb = shutil.disk_usage(models if models.exists() else home).free / 1e9
+        if free_gb < 30:
+            return False, f"only {free_gb:.0f} GB free at {models} -- not pulling"
+        # The package's rc.d script (misc/ollama) runs as ollama_user; rc.subr's
+        # generic <name>_env passes our model dir, loopback bind and a short
+        # keep-alive (the default would pin a 19 GB model in RAM indefinitely).
+        c.plat.sysrc(c.sudo, "ollama_enable=YES", f"ollama_user={user}",
+                     f"ollama_env=OLLAMA_MODELS={models} "
+                     "OLLAMA_HOST=127.0.0.1:11434 OLLAMA_KEEP_ALIVE=10m")
+        c.plat.service(c.sudo, "ollama", "restart")
+        env = dict(os.environ, OLLAMA_HOST="127.0.0.1:11434")
+        for _ in range(30):
+            if run(["ollama", "list"], quiet=True, env=env).returncode == 0:
+                break
+            time.sleep(2)
+        log(f"  downloading {model} -- {size}, this can take a while")
+        p = c.sudo.run(["su", "-l", user, "-c",
+                        f"env OLLAMA_HOST=127.0.0.1:11434 ollama pull {model}"],
+                       timeout=6 * 3600)
+        if p.returncode != 0:
+            return False, f"ollama pull {model} rc={p.returncode} (re-run to resume)"
+        # Tells the dashboard which model to show; its GLM panes stay hidden
+        # on machines without this file.
+        conf = home / ".config/status-dashboard"
+        conf.mkdir(parents=True, exist_ok=True)
+        (conf / "local-ai.env").write_text(f"GLM_MODEL={model}\nGLM_KEEPALIVE=10m\n")
+        c.sudo.run(["chown", "-R", f"{user}:{user}", str(conf)], timeout=30)
+        return True, f"ollama + {model} installed (models in {models})"
+    return _exec(ctx, f"install ollama + pull {model}", do)
+
+
 ORDER = [
     ("Check FreeBSD",          check_freebsd),
     ("Host packages",          install_host_packages),
@@ -949,4 +1021,5 @@ ORDER = [
     ("Desktop panel defaults", configure_desktop_panel),
     ("Konsole theme",          configure_konsole_theme),
     ("Desktop dashboard",      install_dashboard),
+    ("Local AI (GLM)",         install_local_ai),
 ]
