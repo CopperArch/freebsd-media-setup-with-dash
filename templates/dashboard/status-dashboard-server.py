@@ -22,6 +22,7 @@ import pwd
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -74,18 +75,61 @@ _lock = threading.Lock()
 _running = {"id": None, "since": 0}
 _job_lock = threading.Lock()
 _job = {"running": False, "done": False, "results": [], "total": 0,
-        "started": 0, "current": None, "error": None}
+        "started": 0, "current": None, "error": None, "cancelled": False}
 
+# Cancel support. Commands started from the repair worker thread are tracked
+# here (each in its own process group) so /api/cancel can stop them; the
+# worker then skips whatever is still queued.
+_job_thread = threading.local()
+_job_procs = set()
+_cancel = threading.Event()
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 def sh(argv, timeout=300):
+    """Run an argv list (never a shell string); return (rc, combined output).
+
+    Inside a repair job the command gets its own process group and is
+    registered in _job_procs, so a Cancel can stop it and everything it
+    spawned (sudo relays the signal to its root child)."""
+    in_job = getattr(_job_thread, "active", False)
+    if in_job and _cancel.is_set():
+        return 130, "cancelled before it started"
     try:
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return p.returncode, ((p.stdout or "") + (p.stderr or "")).strip()
-    except subprocess.TimeoutExpired:
-        return 124, f"timed out after {timeout}s: {shlex.join(argv)}"
+        p = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True,
+                             start_new_session=True)
     except Exception as e:  # noqa: BLE001
         return 1, f"{type(e).__name__}: {e}"
+    if in_job:
+        _job_procs.add(p)
+        if _cancel.is_set():        # cancel landed between start and register
+            threading.Thread(target=_kill_group, args=(p,), daemon=True).start()
+    try:
+        out, _ = p.communicate(timeout=timeout)
+        if in_job and _cancel.is_set():
+            return 130, ((out or "").strip() + "\n\ncancelled by user").strip()
+        return p.returncode, (out or "").strip()
+    except subprocess.TimeoutExpired:
+        _kill_group(p)
+        p.communicate()
+        return 124, f"timed out after {timeout}s: {shlex.join(argv)}"
+    finally:
+        _job_procs.discard(p)
+
+
+def _kill_group(p, grace=8):
+    """SIGTERM the command's whole process group, SIGKILL if it lingers."""
+    try:
+        os.killpg(p.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    try:
+        p.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
 
 
 def _session_env():
@@ -631,9 +675,12 @@ PANES = [
     ("gpt",     "ChatGPT",         "curl",     "paid",   "CHATGPT_MODEL"),
     ("gm",      "Gemini",          "curl",     "paid",   "GEMINI_MODEL"),
     ("hy",      "Hy4",             "curl",     "paid",   "HY4_MODEL"),
-    ("oa",      "Ox Alpha",        "curl",     "free",   "OXALPHA_MODEL"),
+    # "oa" kept as the id (tmux session names, saved picks) though Ox Alpha
+    # was revealed as GLM 5.3 Flash — labelled by what it actually is.
+    ("oa",      "GLM 5.3",         "curl",     "free",   "OXALPHA_MODEL"),
     ("ds",      "DeepSeek",        "curl",     "free",   "DEEPSEEK_MODEL"),
     ("mm",      "Minimax M3",      "curl",     "free",   "MINIMAX_MODEL"),
+    ("qw",      "Qwen 3.8",        "curl",     "free",   "QWEN_MODEL"),
     ("llm",     "Local LLM",       "ollama",   "local",  None),
     ("glm",     "GLM (local)",     "ollama",   "local",  None),
     ("ask",     "Ask Claude",      "claude",   "hidden", None),
@@ -642,9 +689,10 @@ PANES = [
     ("askgpt",  "Ask ChatGPT",     "curl",     "hidden", "CHATGPT_MODEL"),
     ("askgm",   "Ask Gemini",      "curl",     "hidden", "GEMINI_MODEL"),
     ("askhy",   "Ask Hy4",         "curl",     "hidden", "HY4_MODEL"),
-    ("askoa",   "Ask Ox Alpha",    "curl",     "hidden", "OXALPHA_MODEL"),
+    ("askoa",   "Ask GLM 5.3",     "curl",     "hidden", "OXALPHA_MODEL"),
     ("askds",   "Ask DeepSeek",    "curl",     "hidden", "DEEPSEEK_MODEL"),
     ("askmm",   "Ask Minimax M3",  "curl",     "hidden", "MINIMAX_MODEL"),
+    ("askqw",   "Ask Qwen 3.8",    "curl",     "hidden", "QWEN_MODEL"),
     ("shell",   "Shell",           "bash",     "system", None),
     ("htop",    "Processes",       "htop",     "system", None),
     ("jails",   "Jail stats",      "jls",      "system", None),
@@ -719,6 +767,15 @@ class Handler(SimpleHTTPRequestHandler):
         if "/api/" in (self.path or ""):
             super().log_message(fmt, *a)
 
+    def end_headers(self):
+        # Static files carry only Last-Modified, which lets the browser reuse
+        # a heuristically-cached index.html — so a dashboard change stayed
+        # invisible after a reload. no-cache = always revalidate (a cheap 304
+        # when nothing changed). API replies already send no-store.
+        if not (self.path or "").startswith("/api/"):
+            self.send_header("Cache-Control", "no-cache")
+        super().end_headers()
+
     def _json(self, code, payload):
         body = json.dumps(payload).encode()
         try:
@@ -779,6 +836,18 @@ class Handler(SimpleHTTPRequestHandler):
             threading.Thread(target=go, daemon=True).start()
             return self._json(200, {"ok": True, "output": "reboot scheduled in 2s"})
 
+        if route == "/api/cancel":
+            with _job_lock:
+                if not _job["running"]:
+                    return self._json(409, {"ok": False,
+                                            "error": "nothing is running"})
+                _job["cancelled"] = True
+            _cancel.set()
+            for p in list(_job_procs):
+                threading.Thread(target=_kill_group, args=(p,),
+                                 daemon=True).start()
+            return self._json(200, {"ok": True, "output": "cancelling"})
+
         if route == "/api/refresh":
             rc, out = recollect()
             return self._json(200, {"ok": rc == 0, "output": out[-500:]})
@@ -820,17 +889,30 @@ class Handler(SimpleHTTPRequestHandler):
         with _job_lock:
             _job.update({"running": True, "done": False, "results": [],
                          "total": len(todo), "started": time.time(),
-                         "current": None, "error": None})
+                         "current": None, "error": None, "cancelled": False})
+        _cancel.clear()
 
         def worker():
+            _job_thread.active = True
             try:
                 for fid, args in todo:
+                    if _cancel.is_set():
+                        with _job_lock:
+                            _job["results"].append(
+                                {"id": fid, "ok": False, "cancelled": True,
+                                 "output": "skipped — cancelled", "seconds": 0})
+                        continue
                     with _job_lock:
                         _job["current"] = fid
                     _running.update({"id": fid, "since": time.time()})
                     r = run_fix(fid, args)
+                    if _cancel.is_set():
+                        r["cancelled"] = True
                     with _job_lock:
                         _job["results"].append(r)
+                # The status refresh runs even after a cancel, so the panels
+                # show what state the interrupted repair actually left.
+                _job_thread.active = False
                 _running.update({"id": "recollect", "since": time.time()})
                 recollect()
             except Exception as e:  # noqa: BLE001

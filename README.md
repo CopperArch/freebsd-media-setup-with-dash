@@ -117,12 +117,24 @@ looped on auth.
 1. **rc.d** — services run under `service`/`sysrc`; jails restart on boot.
 2. **Dashboard repairs** — the loopback web dashboard exposes the same closed
    whitelist of one-click fixes; the collector's data source changes from
-   `docker ps` to `bastille list -a` / `jls`.
+   `docker ps` to `bastille list -a` / `jls`. A running repair or update can
+   be stopped with **Cancel** (two clicks, since interrupting an upgrade can
+   leave it half-applied); it stops the whole command and skips anything
+   still queued.
 3. **Nightly `daily-routine.sh` (03:00)** — POSIX sh: checks rc services, ZFS
    pool health, SMART, jail liveness, VPN tunnel reality + up-to-3 restarts,
    re-asserts the pf kill-switch, then `pkg upgrade` per jail behind a ZFS
    snapshot with **verify + auto-rollback**, host `pkg` + `freebsd-update`, and
-   log pruning.
+   log pruning. It also moves TV episodes that landed in the movies folder
+   (and movies in the TV folder) to the right library
+   (`media-library-sort.py`), and `media-library-health.py` keeps a Jellyfin
+   collection for every movie franchise with 2+ films (unidentified movies
+   are matched only when TMDB and an independent IMDb search agree), keeps
+   Plex's automatic collections on, applies hand-made groupings from
+   `~/.config/media-library/manual-collections.json`, and fetches every
+   poster in both apps, re-fetching broken ones. Don't install Jellyfin's
+   "TMDb Box Sets" plugin alongside it — it deletes collections it didn't
+   build.
 
 ## Repository layout
 

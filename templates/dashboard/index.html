@@ -354,6 +354,7 @@
       <div class="foot">
         <span class="tiny muted" id="sheet-note">Running whitelisted repairs — this can take a minute.</span>
         <span class="spacer" style="flex:1"></span>
+        <button class="fixbtn" id="sheet-cancel" style="display:none">Cancel</button>
         <button class="fixbtn" id="sheet-close" disabled>Close</button>
       </div>
     </div>
@@ -933,16 +934,19 @@ async function runFixes(fixes, title, btn){
   $("sheet-spin").style.display = "";
   $("sheet-note").textContent = "Running whitelisted repairs — this can take a minute.";
   close.disabled = true;
+  const cancel = $("sheet-cancel");
+  cancel.style.display = ""; cancel.disabled = false; cancel.textContent = "Cancel";
   log.innerHTML = fixes.map(f=>
     `<div class="res"><div class="t"><span class="spin"></span><span>${esc(f.label||f.id)}</span></div></div>`
   ).join("");
 
   const rowsFor = (results, pending, currentId) => results.map((r,i)=>{
       const label = esc((fixes[i]&&fixes[i].label) || r.id);
+      const st = r.cancelled ? "cancelled" : r.ok ? "fixed" : "failed";
       return `<div class="res ${r.ok?"ok":"bad"}">
-                <div class="t"><span class="dot ${r.ok?"":"f"}"></span>
+                <div class="t"><span class="dot ${r.ok?"":r.cancelled?"w":"f"}"></span>
                   <span>${label}</span>
-                  <span class="v tiny muted" style="margin-left:auto">${r.ok?"fixed":"failed"} · ${r.seconds}s</span></div>
+                  <span class="v tiny muted" style="margin-left:auto">${st} · ${r.seconds}s</span></div>
                 ${r.output? `<pre>${esc(r.output).slice(0,2500)}</pre>`:""}
               </div>`;
     }).join("") + pending.map((f,i)=>{
@@ -984,6 +988,10 @@ async function runFixes(fixes, title, btn){
       log.scrollTop = wasNearBottom ? log.scrollHeight : prevScrollTop;
       const secs = Math.round(Date.now()/1000 - (job.started||0));
       const why = job.current && FIX_INFO[job.current];
+      if(job.cancelled && !job.done){
+        $("sheet-note").textContent = "Stopping — waiting for the running step to exit…";
+        continue;
+      }
       $("sheet-note").textContent =
         `Running repair ${Math.min(done+1, fixes.length)} of ${fixes.length} — ${secs}s elapsed.`
         + (why ? ` ${why}` : " This can take several minutes.");
@@ -993,8 +1001,13 @@ async function runFixes(fixes, title, btn){
 
     const fixed = (job.results||[]).filter(r=>r.ok).length;
     const failed = (job.results||[]).length - fixed;
-    $("sheet-title").textContent = `${fixed} fixed, ${failed} still failing`;
-    $("sheet-note").textContent = "Status re-collected — the panels below are up to date.";
+    if(job.cancelled){
+      $("sheet-title").textContent = `Cancelled — ${fixed} finished before the stop`;
+      $("sheet-note").textContent = "Stopped by you. Status re-collected, so the panels show what was left behind.";
+    } else {
+      $("sheet-title").textContent = `${fixed} fixed, ${failed} still failing`;
+      $("sheet-note").textContent = "Status re-collected — the panels below are up to date.";
+    }
   }catch(e){
     log.innerHTML = `<div class="res bad"><div class="t">
         <span class="dot f"></span><span>Repair request failed</span></div>
@@ -1003,6 +1016,7 @@ async function runFixes(fixes, title, btn){
     $("sheet-note").textContent = "Nothing was changed, or the run was interrupted.";
   }finally{
     $("sheet-spin").style.display = "none";
+    cancel.style.display = "none";
     close.disabled = false;
     fixing = false;
     if(btn) btn.disabled = false;
@@ -1010,6 +1024,22 @@ async function runFixes(fixes, title, btn){
   }
 }
 $("sheet-close").onclick = () => $("overlay").classList.remove("on");
+// Two clicks to stop: killing an apt/topgrade/container update half-way can
+// leave it half-applied, so the first click only arms the button.
+let cancelArm = null;
+$("sheet-cancel").onclick = async () => {
+  const b = $("sheet-cancel");
+  if(!cancelArm){
+    b.textContent = "Click again to stop";
+    cancelArm = setTimeout(() => { cancelArm = null; if(!b.disabled) b.textContent = "Cancel"; }, 4000);
+    return;
+  }
+  clearTimeout(cancelArm); cancelArm = null;
+  b.disabled = true; b.textContent = "Stopping…";
+  try{
+    await fetch("api/cancel", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+  }catch(e){ b.disabled = false; b.textContent = "Cancel"; }
+};
 $("overlay").onclick = e => { if(e.target.id==="overlay" && !fixing) $("overlay").classList.remove("on"); };
 
 // ── VPN provider switch (paste a whole WireGuard .conf, server parses it) ──
