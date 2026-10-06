@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dashboard-pane.sh — FreeBSD edition. Decides what runs in the dashboard's ttyd
 # terminal pane. Full parity with the Linux edition: same AI panes (Claude Code,
-# opencode, local Ollama, DeepSeek/Ox Alpha/Minimax free-tier, and the paid
+# opencode, local Ollama, DeepSeek/GLM 5.3/Minimax/Qwen 3.8 near-free, and the paid
 # ChatGPT/Gemini/Hy4 flagships), same one-shot "Ask X" variants, same
 # opencode-backed agentic sessions. Retargeted bits: bash lives in pkg
 # (/usr/local/bin/bash), python3 -> python3.11, and the system panes use
@@ -27,7 +27,7 @@ shift || true
 # instead of starting over. One session per agent id so different panes never
 # share state. Mirrors the Linux dashboard-pane.sh fix (2026-09-26) -- tmux
 # is installed alongside ttyd, see lib/steps.py's dashboard pkg install.
-AGENT_PANES=(claude opencode oa mm gpt gm hy ds)
+AGENT_PANES=(claude opencode oa mm qw gpt gm hy ds)
 if [[ -z "${DASHBOARD_PANE_TMUX:-}" ]] && command -v tmux >/dev/null 2>&1 \
    && printf '%s\n' "${AGENT_PANES[@]}" | grep -qx "$PROG"; then
     export DASHBOARD_PANE_TMUX=1
@@ -76,6 +76,9 @@ DEEPSEEK_BASE_URL="${DEEPSEEK_BASE_URL:-https://openrouter.ai/api/v1}"
 DEEPSEEK_MODEL="${DEEPSEEK_MODEL:-deepseek/deepseek-v4-flash:free}"
 OXALPHA_MODEL="${OXALPHA_MODEL:-stealth/ox-alpha}"
 MINIMAX_MODEL="${MINIMAX_MODEL:-minimax/minimax-m3:free}"
+# Qwen 3.8: no :free variant existed when added, so it starts on the cheapest
+# paid one; ai-panes-check.py switches it to :free if one appears.
+QWEN_MODEL="${QWEN_MODEL:-qwen/qwen3.8-flash}"
 # Paid flagships — one per remaining major provider; every query bills OpenRouter.
 CHATGPT_MODEL="${CHATGPT_MODEL:-openai/gpt-5.6-sol-pro}"   # ~$2 / $10 per M tokens
 GEMINI_MODEL="${GEMINI_MODEL:-google/gemini-3.7-flash}"     # ~$0.75 / $3.75 per M tokens
@@ -105,14 +108,21 @@ ask_curl() {
     curl -s -m 120 "$DEEPSEEK_BASE_URL/chat/completions" \
         -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
         -H "Content-Type: application/json" \
-        -d "{\"model\":\"$1\",\"messages\":[{\"role\":\"user\",\"content\":$(python3.11 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$2")}]}" \
+        -d "{\"model\":\"$1\",\"max_tokens\":8192,\"messages\":[{\"role\":\"user\",\"content\":$(python3.11 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$2")}]}" \
     | python3.11 -c '
 import json,sys
+# max_tokens matters: without it OpenRouter reserves the full model output
+# limit (131k on Qwen 3.8) against the credit balance up front and refuses
+# with 402 once the balance runs low, even for a one-line answer.
 try:
     d=json.load(sys.stdin)
-    print(d["choices"][0]["message"]["content"])
 except Exception as e:
-    print("request failed:", e)
+    print("request failed: no JSON reply", e); sys.exit()
+if d.get("error"):
+    print("OpenRouter error:", d["error"].get("message", d["error"]))
+else:
+    msg=d["choices"][0]["message"]
+    print(msg.get("content") or "(empty answer — the model spent its whole budget thinking; ask again or shorten the question)")
 '
 }
 
@@ -176,12 +186,12 @@ case "$PROG" in
             OPENROUTER_API_KEY="$DEEPSEEK_API_KEY" opencode --model "openrouter/$DEEPSEEK_MODEL"; fi
         fallback "deepseek" ;;
     askoa)
-        QUERY="$*"; hr "Ask Ox Alpha — $OXALPHA_MODEL (near-free, verify at openrouter.ai)"
+        QUERY="$*"; hr "Ask GLM 5.3 — $OXALPHA_MODEL (near-free, verify at openrouter.ai)"
         if [[ -z "${QUERY// }" ]]; then echo "no question given"
         elif need_key "this pane uses model $OXALPHA_MODEL"; then echo "> $QUERY"; echo; ask_curl "$OXALPHA_MODEL" "$QUERY"; fi
         press_enter ;;
     oa)
-        hr "Ox Alpha — $OXALPHA_MODEL (near-free) — file/shell access via opencode"
+        hr "GLM 5.3 — $OXALPHA_MODEL (near-free) — file/shell access via opencode"
         if need_key "this pane uses model $OXALPHA_MODEL"; then
             OPENROUTER_API_KEY="$DEEPSEEK_API_KEY" opencode --model "openrouter/$OXALPHA_MODEL"; fi
         fallback "oxalpha" ;;
@@ -195,6 +205,16 @@ case "$PROG" in
         if need_key "this pane uses model $MINIMAX_MODEL"; then
             OPENROUTER_API_KEY="$DEEPSEEK_API_KEY" opencode --model "openrouter/$MINIMAX_MODEL"; fi
         fallback "minimax" ;;
+    askqw)
+        QUERY="$*"; hr "Ask Qwen 3.8 — $QWEN_MODEL (near-free, verify at openrouter.ai)"
+        if [[ -z "${QUERY// }" ]]; then echo "no question given"
+        elif need_key "this pane uses model $QWEN_MODEL"; then echo "> $QUERY"; echo; ask_curl "$QWEN_MODEL" "$QUERY"; fi
+        press_enter ;;
+    qw)
+        hr "Qwen 3.8 — $QWEN_MODEL (near-free) — file/shell access via opencode"
+        if need_key "this pane uses model $QWEN_MODEL"; then
+            OPENROUTER_API_KEY="$DEEPSEEK_API_KEY" opencode --model "openrouter/$QWEN_MODEL"; fi
+        fallback "qwen" ;;
     askgpt)
         QUERY="$*"; hr "Ask ChatGPT ($CHATGPT_MODEL) — PAID, bills OpenRouter"
         if [[ -z "${QUERY// }" ]]; then echo "no question given"

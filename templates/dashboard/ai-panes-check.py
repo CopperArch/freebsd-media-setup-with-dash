@@ -53,8 +53,12 @@ DEFAULTS = {
     "CHATGPT_MODEL":  "openai/gpt-5.6-sol-pro",
     "GEMINI_MODEL":   "google/gemini-3.7-flash",
     "HY4_MODEL":      "tencent/hy4-preview",
+    # Added 2026-10-06 at the user's request. No :free variant existed, so
+    # this starts on the cheapest paid one; check_free_slot moves it to a
+    # :free id automatically if one ever appears in the same family.
+    "QWEN_MODEL":     "qwen/qwen3.8-flash",
 }
-FREE_KEYS = ("OXALPHA_MODEL", "DEEPSEEK_MODEL", "MINIMAX_MODEL")
+FREE_KEYS = ("OXALPHA_MODEL", "DEEPSEEK_MODEL", "MINIMAX_MODEL", "QWEN_MODEL")
 # (env key, OpenRouter provider prefix) — one flagship auto-picked per provider.
 PAID_SLOTS = (
     ("CHATGPT_MODEL", "openai/"),
@@ -64,9 +68,13 @@ PAID_SLOTS = (
 # Fallback substrings to search by if a free slug's exact id 404s (providers
 # occasionally rev a free slug's suffix, e.g. a date stamp).
 FAMILY_HINT = {
-    "OXALPHA_MODEL":  "ox-alpha",
+    # Ox Alpha was de-anonymised as GLM 5.3 Flash (see KNOWN_RENAMES) and the
+    # pane is labelled "GLM 5.3" since 2026-10-06; search that family so a
+    # future glm-5.3-flash:free is picked up.
+    "OXALPHA_MODEL":  "glm-5.3-flash",
     "DEEPSEEK_MODEL": "deepseek-v4-flash",
     "MINIMAX_MODEL":  "minimax-m3",
+    "QWEN_MODEL":     "qwen3.8-flash",
 }
 # Stealth-model de-anonymizations confirmed by reporting, consulted only when
 # both the exact id and the family-substring search find nothing at all —
@@ -283,7 +291,7 @@ def main():
         for w in warnings:
             print(f"  [WARN] {w}")
     else:
-        print("  [OK] all six models still resolve as expected")
+        print(f"  [OK] all {len(DEFAULTS)} models still resolve as expected")
     return 0
 
 

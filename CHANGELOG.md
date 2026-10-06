@@ -3,6 +3,29 @@
 Project version lives in `VERSION`. Bumped on every change made to this
 source tree from here on, per the user's request (2026-09-26).
 
+## 0.5.0 - 2026-10-06
+Mirrors CopperArch-Linux-Media PR #4.
+- Dashboard: the repair/update sheet gets a **Cancel** button. Job commands
+  run in their own process group; `POST /api/cancel` stops them and skips
+  anything still queued (two clicks to confirm). Static files now send
+  `Cache-Control: no-cache` so dashboard updates show after a reload.
+- AI panes: new **Qwen 3.8** pane (`qw`/`askqw`, cheapest paid variant until a
+  `:free` one appears); "Ox Alpha" relabelled **GLM 5.3** (what it runs).
+  One-shot Ask panes cap `max_tokens` (OpenRouter otherwise reserves the full
+  131k output against the credit balance and refuses when it runs low) and
+  print OpenRouter's real error instead of `'choices'`.
+- New nightly `media-library-sort.py` (routine 3b): moves misfiled
+  movies/episodes between libraries; renames only, never overwrites, skips
+  *arr-managed and recently changed files, new folders inherit their
+  parent's owner (the routine runs as root).
+- New nightly `media-library-health.py` (routine 3c): Jellyfin franchise
+  collections from TMDB (via Radarr), IMDb-confirmed matching for
+  unidentified movies, Plex auto-collections kept on, hand-made groupings,
+  and a fetch-check of every poster in both apps. Both scripts take the jail
+  endpoints/keys from `status-collect.py`.
+- Not ported: the Linux edition's Power tile (FreeBSD exposes no RAPL
+  counters to read).
+
 ## 0.4.0 - 2026-09-29
 - New opt-in **Local AI (GLM)** component, mirroring the Linux edition
   (CopperArch-Linux-Media PR #3). Off by default (`use_local_glm: false`);

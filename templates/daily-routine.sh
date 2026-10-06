@@ -315,6 +315,29 @@ for j in $ALL_JAILS; do
     fi
 done
 
+# ─── 3b. Misfiled media: episodes in Movies/, movies in TV/ ────────────────
+# Moves them to the right library (rename within the pool, never overwrites,
+# skips *arr-managed files and anything touched in the last 2h; new folders
+# get their parent's owner so the jailed apps can still write to them).
+banner "Misfiled Movies / TV Episodes"
+if [ -x "$ROOT/.local/bin/media-library-sort.py" ]; then
+    "$ROOT/.local/bin/media-library-sort.py" --apply 2>&1 | tee -a "$LOG"
+else
+    log "  [SKIP] media-library-sort.py not installed"
+fi
+
+# ─── 3c. Collections + artwork in Jellyfin and Plex ────────────────────────
+# Creates/tops up Jellyfin's TMDB franchise collections (2+ movies), matches
+# unidentified movies only when TMDB and IMDb agree, keeps Plex's automatic
+# collections on, applies ~/.config/media-library/manual-collections.json,
+# and fetches every poster in both apps, re-fetching broken ones. Add-only.
+banner "Media Collections & Artwork"
+if [ -x "$ROOT/.local/bin/media-library-health.py" ]; then
+    "$ROOT/.local/bin/media-library-health.py" 2>&1 | tee -a "$LOG"
+else
+    log "  [SKIP] media-library-health.py not installed"
+fi
+
 # ─── 4. Host base + package updates ─────────────────────────────────────────
 banner "Host Updates"
 log "  pkg upgrade (host)"
