@@ -3,6 +3,12 @@
 Project version lives in `VERSION`. Bumped on every change made to this
 source tree from here on, per the user's request (2026-09-26).
 
+## 0.5.2 - 2026-10-06
+- Dashboard: the repair/update window can be hidden while a fix runs
+  (Close reads "Hide"); the job keeps going and a header button shows its
+  progress and result, reopening the window on click. Mirrors
+  CopperArch-Linux-Media PR #7.
+
 ## 0.5.1 - 2026-10-06
 - Nightly routine (Log Hygiene section): cleans the host and per-jail `pkg`
   download caches, removes test-VM disks / stock FreeBSD install media left
