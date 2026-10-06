@@ -357,6 +357,35 @@ log "  pruned maintenance logs older than 5 days"
 find "$ROOT/.local/bin" -maxdepth 1 -name '*.bak-*' -mtime +5 -delete 2>/dev/null
 log "  pruned script backups (.bak-*) older than 5 days"
 
+# Disk-space cleanup (mirrors the Linux edition's 9a, 2026-10-06). FreeBSD has
+# no Docker images to prune; the equivalent leftovers are pkg's download
+# cache (every package ever fetched, host and per jail) and test-VM disks /
+# stock install media left in ~/build-iso by ISO testing.
+pkg clean -ay >/dev/null 2>&1 && log "  [OK]   host pkg cache cleaned"
+for j in $(bastille list -q 2>/dev/null || jls name 2>/dev/null); do
+    jexec "$j" pkg clean -ay >/dev/null 2>&1
+done
+log "  [OK]   jail pkg caches cleaned"
+if [ -d "$ROOT/build-iso" ]; then
+    find "$ROOT/build-iso" -maxdepth 1 -type f -mtime +7 \( -name '*.raw' \
+        -o -name '*.qcow2' -o -name '*.vmdk' -o -name '*.vdi' \
+        -o -name 'FreeBSD-*-dvd1.iso' -o -name 'FreeBSD-*-disc1.iso' \
+        -o -name 'FreeBSD-*-memstick.img' \) 2>/dev/null | while read -r f; do
+        # fstat prints a header plus one line per process holding the file.
+        [ "$(fstat "$f" 2>/dev/null | wc -l)" -gt 1 ] && continue
+        rm -f "$f" && log "  [FIX ] removed stale $(basename "$f")"
+    done
+fi
+# Warn early: ZFS slows sharply past ~80% and fails writes when full.
+for pool in $(zpool list -H -o name 2>/dev/null); do
+    cap=$(zpool list -H -o capacity "$pool" 2>/dev/null | tr -dc '0-9')
+    if [ -n "$cap" ] && [ "$cap" -ge 80 ]; then
+        warn "  ZFS pool $pool is ${cap}% full — biggest datasets: $(zfs list -H -o name,used -s used -r "$pool" 2>/dev/null | tail -4 | awk '{printf "%s %s; ", $1, $2}')"
+    else
+        log "  [OK]   ZFS pool $pool ${cap}% full"
+    fi
+done
+
 # ─── 6. Dashboard AI panes: refresh model slugs + pricing ───────────────────
 # Re-pick the paid flagships, verify the free tiers still exist, and refresh
 # model-pricing.json so the dashboard shows live per-pane pricing. Never fails

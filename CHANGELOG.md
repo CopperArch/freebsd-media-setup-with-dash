@@ -3,6 +3,13 @@
 Project version lives in `VERSION`. Bumped on every change made to this
 source tree from here on, per the user's request (2026-09-26).
 
+## 0.5.1 - 2026-10-06
+- Nightly routine (Log Hygiene section): cleans the host and per-jail `pkg`
+  download caches, removes test-VM disks / stock FreeBSD install media left
+  in `~/build-iso` for 7+ days (never one a process still holds, never the
+  built ISO), and warns once any ZFS pool passes 80% with its biggest
+  datasets. Mirrors the Linux edition's root-disk cleanup.
+
 ## 0.5.0 - 2026-10-06
 Mirrors CopperArch-Linux-Media PR #4.
 - Dashboard: the repair/update sheet gets a **Cancel** button. Job commands
