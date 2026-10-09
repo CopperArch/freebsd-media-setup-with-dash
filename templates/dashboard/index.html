@@ -429,6 +429,9 @@
     <div class="sheet" style="width:min(720px,94vw)">
       <h3>About This System</h3>
       <div class="log" style="padding:14px 18px">
+        <div class="tiny" style="margin-bottom:12px;color:var(--faint)">
+          CopperArch FreeBSD Media dashboard — version <strong id="about-version" style="color:var(--accent)">…</strong>
+        </div>
         <div class="tiny" style="border:1px solid rgba(227,160,8,.35);background:rgba(227,160,8,.08);
             border-radius:8px;padding:10px 12px;margin-bottom:16px;line-height:1.6">
           <strong>Disclaimer:</strong> This is a personal, self-hosted system built for
@@ -1096,7 +1099,14 @@ $("vpn-conf-save").onclick = async () => {
 };
 
 // ── header logo -> about/disclaimer page ───────────────────────────────────
-$("brand-info-btn").onclick = () => $("info-overlay").classList.add("on");
+// The installed project version lives in a VERSION file next to this page
+// (written by the installer, refreshed nightly), read each time About opens.
+$("brand-info-btn").onclick = () => {
+  $("info-overlay").classList.add("on");
+  fetch("VERSION", {cache:"no-store"}).then(r => r.ok ? r.text() : "")
+    .then(t => { $("about-version").textContent = (t.trim().split("\n")[0] || "unknown").slice(0, 40); })
+    .catch(() => { $("about-version").textContent = "unknown"; });
+};
 $("info-close").onclick = () => $("info-overlay").classList.remove("on");
 $("info-overlay").onclick = e => { if(e.target.id==="info-overlay") $("info-overlay").classList.remove("on"); };
 
