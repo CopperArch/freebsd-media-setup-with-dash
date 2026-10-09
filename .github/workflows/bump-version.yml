@@ -1,0 +1,59 @@
+name: Bump version
+
+# Every change that lands on the default branch gets a new version number.
+# If the push already changed VERSION (a deliberate minor/major bump made in
+# the pull request), that number is kept; otherwise the patch number goes up
+# by one and the commit subjects are added to CHANGELOG.md. The dashboard's
+# About panel shows this number.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump VERSION unless this push already changed it
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -eu
+          if git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            range="${BEFORE}..HEAD"
+          else
+            range="HEAD~1..HEAD"
+          fi
+          if git diff --name-only "$range" | grep -qx VERSION; then
+            echo "VERSION was changed by this push - keeping $(head -1 VERSION)"
+            exit 0
+          fi
+          old="$(head -1 VERSION | tr -d '[:space:]')"
+          echo "$old" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "VERSION '$old' is not X.Y.Z"; exit 1; }
+          major="${old%%.*}"; rest="${old#*.}"; minor="${rest%%.*}"; patch="${rest#*.}"
+          new="${major}.${minor}.$((patch + 1))"
+          echo "$new" > VERSION
+          NEW="$new" SUBJECTS="$(git log --reverse --format='- %s' "$range")" python3 - <<'PY'
+          import datetime, os, pathlib
+          p = pathlib.Path("CHANGELOG.md")
+          lines = p.read_text().splitlines(keepends=True) if p.exists() else ["# Changelog\n", "\n"]
+          entry = f"## {os.environ['NEW']} - {datetime.date.today().isoformat()}\n{os.environ['SUBJECTS'].strip()}\n\n"
+          at = next((i for i, l in enumerate(lines) if l.startswith("## ")), len(lines))
+          lines.insert(at, entry)
+          p.write_text("".join(lines))
+          PY
+          git config user.name "CopperArch"
+          git config user.email "143160503+CopperArch@users.noreply.github.com"
+          git add VERSION CHANGELOG.md
+          git commit -m "Bump version to ${new}"
+          git push
