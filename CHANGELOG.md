@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.3 - 2026-10-09
+- Version number updates automatically on every merge (#8)
+
 ## 0.6.2 - 2026-10-09
 - Dashboard: the About panel (click the logo) shows the installed project
   version; the installer copies `VERSION` next to the page. Mirrors
