@@ -3,6 +3,20 @@
 Project version lives in `VERSION`. Bumped on every change made to this
 source tree from here on, per the user's request (2026-09-26).
 
+## 0.6.0 - 2026-10-09
+Mirrors CopperArch-Linux-Media PR #8 (dashboard parts; the Docker/qBittorrent
+warning fixes in that PR have no FreeBSD counterpart).
+- Dashboard: the AI picker gains a Free section listing every model that is
+  currently free on OpenRouter (text output, tool calling).
+  `ai-panes-check.py` rebuilds the list nightly into `free-models.json`; a
+  free pane re-checks the price live before starting and refuses to run if
+  the model is no longer free.
+- Dashboard: model prices are shown in pounds using the day's USD->GBP rate.
+- Dashboard: the picker reloads its list each time it is opened.
+- `ai-panes-check.py`: a paid slot keeps its model while it still exists
+  instead of hopping to whichever variant is cheapest that night (which
+  repeated the same "no free tier left" warning).
+
 ## 0.5.2 - 2026-10-06
 - Dashboard: the repair/update window can be hidden while a fix runs
   (Close reads "Hide"); the job keeps going and a header button shows its
