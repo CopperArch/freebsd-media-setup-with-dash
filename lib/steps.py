@@ -836,6 +836,9 @@ def install_dashboard(ctx: Ctx, accept) -> tuple[bool, str]:
                 render_file(f, bin_dir / f.name, c.v, mode=0o755)
         # The page carries no {{TOKENS}} — copy it verbatim, 644.
         render_file(src / "index.html", share / "index.html", c.v, mode=0o644)
+        # Project version, shown in the dashboard's About panel (click the logo).
+        if (c.repo / "VERSION").exists():
+            render_file(c.repo / "VERSION", share / "VERSION", c.v, mode=0o644)
 
         # Seed config: API keys (blank, chmod 600) + the VPN-confined group,
         # kept in sync with stack.yaml so collector and repair server agree.
