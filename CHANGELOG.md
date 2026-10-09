@@ -3,6 +3,11 @@
 Project version lives in `VERSION`. Bumped on every change made to this
 source tree from here on, per the user's request (2026-09-26).
 
+Since 2026-10-09 the number updates by itself: every change merged to
+`master` gets the next patch number from
+`.github/workflows/bump-version.yml`, which also adds the change to this
+file. A pull request that edits `VERSION` itself is left as it is.
+
 ## 0.6.2 - 2026-10-09
 - Dashboard: the About panel (click the logo) shows the installed project
   version; the installer copies `VERSION` next to the page. Mirrors
