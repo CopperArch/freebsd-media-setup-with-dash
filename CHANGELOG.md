@@ -3,6 +3,13 @@
 Project version lives in `VERSION`. Bumped on every change made to this
 source tree from here on, per the user's request (2026-09-26).
 
+## 0.6.1 - 2026-10-09
+- Dashboard: clicking the green dot on a healthy jail shows the installed
+  version of its main package (read with `pkg query` inside the jail);
+  clicking again swaps back. The rest of the tile still opens the app.
+  Mirrors CopperArch-Linux-Media PR #9. Written on Linux — not yet run on a
+  FreeBSD host.
+
 ## 0.6.0 - 2026-10-09
 Mirrors CopperArch-Linux-Media PR #8 (dashboard parts; the Docker/qBittorrent
 warning fixes in that PR have no FreeBSD counterpart).
