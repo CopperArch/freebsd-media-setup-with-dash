@@ -1160,7 +1160,13 @@ function renderThermal(d){
   $("thermal").innerHTML = out;
 }
 
+// Healthy (green-dot) jails: click the DOT to swap the tile's status text for
+// the installed version, click it again to swap back (the rest of the tile
+// still opens the app). Kept in a set so it survives the 60s re-render.
+const _verShown = new Set();
+let _lastStatus = null;
 function renderDocker(d){
+  _lastStatus = d;
   const k=d.docker||{};
   if(k.error){ $("docker").innerHTML=`<div class="empty">${esc(k.error)}</div>`; return; }
   $("docker-tag").textContent = `${k.running}/${k.total} running`;
@@ -1173,17 +1179,27 @@ function renderDocker(d){
     const detail = c.state!=="running" ? c.state
                  : c.cpu!=null ? `${c.cpu.toFixed(0)}% · ${(c.mem||"").split(" / ")[0]}`
                  : c.since;
+    const green = !bad && !warnish && c.state==="running";
+    const shown = green && _verShown.has(c.name);
+    const version = c.version || "version not reported";
     out += `<div class="c ${bad?"bad":warnish?"warnish":""}" data-open="${esc(c.name)}"
-              title="${esc(c.image)} — ${esc(c.status)} · click to open">
-              <span class="dot ${dot}"></span>
+              title="${esc(c.image)} — ${esc(c.status)} · click to open${green?" · click the dot for the installed version":""}">
+              <span class="dot ${dot}"${green?` data-vername="${esc(c.name)}" style="cursor:help"`:""}></span>
               <span class="n">${esc(c.name)}</span>
-              <span class="u">${esc(detail)}</span>
+              <span class="u"${shown?` style="color:var(--accent)"`:""}>${esc(shown ? version : detail)}</span>
             </div>`;
   }
   out += `</div>`;
   $("docker").innerHTML = out;
   for(const el of $("docker").querySelectorAll("[data-open]"))
     el.onclick = () => openLink(el.dataset.open);
+  for(const el of $("docker").querySelectorAll("[data-vername]"))
+    el.onclick = e => {
+      e.stopPropagation();   // don't also open the app
+      const n = el.dataset.vername;
+      _verShown.has(n) ? _verShown.delete(n) : _verShown.add(n);
+      renderDocker(_lastStatus);
+    };
 }
 
 // Fire-and-forget: opens (or focuses/adds a tab to) a whitelisted app in the

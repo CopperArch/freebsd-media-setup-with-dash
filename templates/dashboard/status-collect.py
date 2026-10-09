@@ -320,6 +320,30 @@ def _running_jails():
     return set(raw.split())
 
 
+# Jails whose main package isn't named after the jail.
+_JAIL_PKG_HINT = {"plex": "plexmediaserver", "nextcloud-db": "postgresql",
+                  "vpn": "wireguard-tools"}
+
+
+def _jail_version(j):
+    """Installed version of the jail's main package, for the dashboard's
+    click-the-dot reveal. Best effort: '' when pkg can't say."""
+    try:
+        raw = jexec(j, ["pkg", "query", "%n\t%v"], timeout=12) or ""
+    except Exception:  # noqa: BLE001
+        return ""
+    want = _JAIL_PKG_HINT.get(j, re.sub(r"[^a-z0-9]", "", j.lower()))
+    best = ""
+    for line in raw.splitlines():
+        name, _, ver = line.partition("\t")
+        if ver and re.sub(r"[^a-z0-9]", "", name.lower()).startswith(
+                re.sub(r"[^a-z0-9]", "", want)):
+            # shortest matching name = the app itself, not a plugin of it
+            if not best or len(name) < len(best[0]):
+                best = (name, ver)
+    return best[1] if best else ""
+
+
 def collect_docker():
     """Emitted under the key 'docker' so index.html renders it unchanged; the
     contents are Bastille jails. state=running|exited, health from the jail's
@@ -343,6 +367,7 @@ def collect_docker():
             "status": "up" if up else "stopped",
             "image": j, "since": "", "health": health,
             "restarts": 0, "cpu": None, "mem": None, "mem_pct": None,
+            "version": _jail_version(j) if up else "",
         })
     lst = sorted(containers, key=lambda c: c["name"])
     return {
