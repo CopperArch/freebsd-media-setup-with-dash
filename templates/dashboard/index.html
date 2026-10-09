@@ -625,7 +625,10 @@ const $ = id => document.getElementById(id);
   const GROUP_LABEL = {agent:"Agent", paid:"Paid", free:"Free", local:"Local", system:"System"};
   const GROUP_ORDER = ["agent", "paid", "free", "local", "system"];
 
-  fetch("api/panes").then(r=>r.json()).then(d=>{
+  // Re-fetched every time the menu is opened: the Free section and all the
+  // prices are rewritten nightly by ai-panes-check.py, and this page can stay
+  // loaded for days.
+  const loadPanes = () => fetch("api/panes").then(r=>r.json()).then(d=>{
     const panes = d.panes || [];    // /api/panes already excludes the ask-only ids
     for(const p of panes) PANE_LABELS[p.id] = p.label;
     menu.innerHTML = "";
@@ -647,13 +650,15 @@ const $ = id => document.getElementById(id);
       }
     }
     const cur = panes.find(p=>p.id===pane);
-    btn.textContent = (cur ? cur.label : "Claude Code") + " ▾";
+    btn.textContent = (cur ? cur.label : PANE_LABELS[pane] || "Claude Code") + " ▾";
   }).catch(()=>{});
+  loadPanes();
 
   // No program boots on page load: the iframe stays blank until a pane is
   // picked (or the dock is opened with a width button).
 
-  btn.onclick = e => { e.stopPropagation(); menu.classList.toggle("on"); };
+  btn.onclick = e => { e.stopPropagation(); menu.classList.toggle("on");
+                       if(menu.classList.contains("on")) loadPanes(); };
   document.addEventListener("click", () => menu.classList.remove("on"));
   menu.onclick = e => e.stopPropagation();
 

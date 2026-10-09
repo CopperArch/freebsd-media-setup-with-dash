@@ -703,6 +703,18 @@ PANES = [
 ]
 
 PRICING_FILE = _HOME / ".config/status-dashboard/model-pricing.json"
+# Every model that was $0 on OpenRouter at the last nightly ai-panes-check.py
+# run. Each becomes a "free:<model id>" pane in the picker's FREE tier;
+# dashboard-pane.sh only launches ids found in this same file.
+FREE_FILE = _HOME / ".config/status-dashboard/free-models.json"
+
+
+def read_free_models():
+    try:
+        return json.loads(FREE_FILE.read_text()).get("models", [])
+    except Exception:  # noqa: BLE001 -- no file yet just means no extra free panes
+        return []
+
 # Written by the installer only when Local AI (GLM) was chosen -- the GLM
 # panes stay hidden elsewhere so a stray click can't start a 19 GB download.
 LOCAL_AI_FILE = _HOME / ".config/status-dashboard/local-ai.env"
@@ -730,6 +742,14 @@ def format_price(entry):
     p, c = entry.get("prompt"), entry.get("completion")
     if p is None or c is None:
         return None
+    # Shown in pounds whenever ai-panes-check.py managed to fetch a USD->GBP
+    # rate (OpenRouter prices and bills in USD); dollars only as a fallback.
+    rate = entry.get("usd_gbp")
+    if rate:
+        def gbp(v):
+            v = v * 1e6 * rate
+            return f"£{v:.2f}" if v >= 0.1 else f"£{v:.3f}"
+        return f"{gbp(p)}/{gbp(c)} per M tokens"
     return f"${p * 1e6:.2f}/${c * 1e6:.2f} per M tokens"
 
 
@@ -747,6 +767,12 @@ def available_panes():
             eff_group = "free" if entry["free"] else "paid"
         out.append({"id": pid, "label": label, "group": eff_group,
                     "price": format_price(entry)})
+    # FREE tier: whatever is free on OpenRouter right now, refreshed nightly.
+    if shutil.which("opencode"):
+        for m in read_free_models():
+            price = f"free until {m['expires']}" if m.get("expires") else "free"
+            out.append({"id": "free:" + m["id"], "label": m.get("name") or m["id"],
+                        "group": "free", "price": price})
     return out
 
 
