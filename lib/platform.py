@@ -269,6 +269,21 @@ class Platform:
         return sudo.run(["bastille", "config", name, "add", key, value],
                         timeout=30).returncode == 0
 
+    def jail_set_securelevel(self, sudo, name: str, level: int) -> bool:
+        """Bastille creates every jail at securelevel 2, at which the kernel
+        refuses to load pf rules inside it ("DIOCADDRULE: Operation not
+        permitted"). Returns True when the level had to be changed, in
+        which case the jail needs a restart for it to apply."""
+        conf = Path(f"/usr/local/bastille/jails/{name}/jail.conf")
+        try:
+            if re.search(rf"^\s*securelevel\s*=\s*{level}\s*;", conf.read_text(), re.M):
+                return False
+        except OSError:
+            pass
+        sudo.run(["bastille", "config", name, "set", "securelevel", str(level)],
+                 timeout=30)
+        return True
+
     def jail_restart(self, sudo, name: str) -> bool:
         return sudo.run(["bastille", "restart", name], timeout=120).returncode == 0
 
