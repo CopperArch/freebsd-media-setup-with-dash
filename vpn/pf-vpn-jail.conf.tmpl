@@ -1,7 +1,7 @@
 # pf-vpn-jail.conf -- loaded INSIDE the vpn jail (its /etc/pf.conf).
 #
 # The vpn jail is the router for qbittorrent/sonarr/radarr: their default
-# route is this jail. Two jobs, both measured on a clean FreeBSD 15.1 install:
+# route is this jail. Three jobs, all measured on a clean FreeBSD 15.1 install:
 #
 #  1. Translate their traffic onto the tunnel address. A WireGuard server only
 #     accepts packets from the address it assigned to this peer; forwarded
@@ -14,9 +14,17 @@
 #     again on the host (pf-killswitch.conf.tmpl) in case this ruleset is
 #     ever not loaded.
 #
+#  3. Clamp the TCP segment size to what fits in the tunnel. wg0's MTU is
+#     1420 (both writers of wg0.conf set it) while the confined jails
+#     advertise segments sized for 1500; path-MTU discovery through a VPN
+#     provider rarely works, so without this small requests succeed and
+#     anything large stalls forever (measured: a 9 MB download hung, and the
+#     nightly package upgrade of a confined jail with it). 1380 = 1420 - 40.
+#
 # pf only loads in a jail whose securelevel is below 2; the installer lowers
 # this one jail to 1. "(wg0)" is resolved at packet time, so the rules load
 # before the tunnel exists.
 
+scrub on wg0 all max-mss 1380
 nat on wg0 inet from { {{VPN_CONFINED_IPS}} } to any -> (wg0)
 block drop out quick on vnet0 from { {{VPN_CONFINED_IPS}} } to any
