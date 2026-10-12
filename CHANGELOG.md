@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.5 - 2026-10-12
+- Jellyfin duplicate remover; name the active VPN, own-server support (#10)
+
 ## 0.6.4 - 2026-10-12
 - Rename state dir to ~/.dbmedia (#9)
 
