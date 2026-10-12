@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.7 - 2026-10-12
+- VPN that actually protects and connects; dashboard and nightly routine without false alarms (#12)
+
 ## 0.6.6 - 2026-10-12
 - Safer re-runs, working dry run, and a hook so CopperBSD can ship this tree as-is (#11)
 
