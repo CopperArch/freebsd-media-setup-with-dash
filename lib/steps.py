@@ -59,6 +59,10 @@ def _exec(ctx: Ctx, desc, fn):
         return False, f"{desc} failed: {e}"
 
 
+# First line of the block create_vpn_stack appends to the host's pf.conf.
+KILLSWITCH_MARKER = "# freebsd-media-setup vpn kill-switch"
+
+
 # ── 0. guardrail ────────────────────────────────────────────────────────────
 def check_freebsd(ctx: Ctx, accept) -> tuple[bool, str]:
     if not ctx.plat.is_freebsd() and not ctx.dry_run:
@@ -103,8 +107,18 @@ def bootstrap_bastille(ctx: Ctx, accept) -> tuple[bool, str]:
             return False, f"{msg}; no default route found, can't set up jail NAT"
         c.plat.enable_forwarding(c.sudo)
         nat_vars = dict(c.v, WAN_IF=wan_if)
-        render_file(c.tpl / "pf-nat.conf.tmpl", Path("/etc/pf.conf"), nat_vars,
-                    mode=0o644)
+        # Re-running the installer rewrites pf.conf from the NAT template.
+        # Carry an already-installed VPN kill-switch across that rewrite:
+        # reloading without it would leave the confined jails unprotected
+        # until the VPN step, several steps later, appended it again.
+        pf_conf = Path("/etc/pf.conf")
+        old_conf = pf_conf.read_text() if pf_conf.exists() else ""
+        killswitch = (old_conf[old_conf.index(KILLSWITCH_MARKER):]
+                      if KILLSWITCH_MARKER in old_conf else "")
+        render_file(c.tpl / "pf-nat.conf.tmpl", pf_conf, nat_vars, mode=0o644)
+        if killswitch:
+            pf_conf.write_text(pf_conf.read_text().rstrip("\n") + "\n\n"
+                               + killswitch.rstrip("\n") + "\n")
         nat_ok = c.plat.pf_reload(c.sudo)
         return nat_ok, f"{msg}; jail NAT via {wan_if} {'ok' if nat_ok else 'FAILED'}"
     return _exec(ctx, "bastille bootstrap", do)
@@ -295,13 +309,23 @@ def build_seerr_from_source(ctx: Ctx, accept) -> tuple[bool, str]:
     service since none ships from a package."""
     if not ctx.profile.use_media_stack:
         return True, "media stack disabled in profile"
-    if not ctx.plat.jail_exists("seerr"):
+    if not ctx.dry_run and not ctx.plat.jail_exists("seerr"):
         return False, "seerr jail not created yet -- run the Media jails step first"
     if not accept("Build Seerr from source (no FreeBSD package exists for it) "
                   "-- this downloads and compiles a Node.js app, several minutes?"):
         return False, "declined"
     def do(c):
         jail_root = "/usr/local/bastille/jails/seerr/root"
+        # A finished build leaves a stamp named for the pinned release, so
+        # re-running the installer only rebuilds when that pin has moved.
+        script = (c.repo / "templates/seerr-build/build-seerr.sh").read_text()
+        m = re.search(r"^SEERR_TAG=(\S+)", script, flags=re.M)
+        stamp = Path(f"{jail_root}/usr/local/seerr-build/"
+                     f".built-{m.group(1) if m else 'unknown'}")
+        if stamp.exists():
+            c.plat.jail_sysrc(c.sudo, "seerr", "seerr_enable=YES")
+            c.plat.jail_service(c.sudo, "seerr", "seerr", "start")
+            return True, f"seerr {stamp.name[len('.built-'):]} already built"
         render_file(c.repo / "templates/seerr-build/build-seerr.sh",
                     Path(f"{jail_root}/usr/local/seerr-build/build-seerr.sh"),
                     c.v, mode=0o755)
@@ -323,6 +347,7 @@ def build_seerr_from_source(ctx: Ctx, accept) -> tuple[bool, str]:
         render_file(c.repo / "templates/seerr-build/seerr.rc",
                     Path(f"{jail_root}/usr/local/etc/rc.d/seerr"), c.v, mode=0o755)
         c.plat.jail_sysrc(c.sudo, "seerr", "seerr_enable=YES")
+        stamp.write_text("")
         started = c.plat.jail_service(c.sudo, "seerr", "seerr", "start")
         return started, ("seerr built and started" if started
                          else "seerr built but the service failed to start")
@@ -505,7 +530,7 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
         # confined jail's IP, then reload. This is what actually enforces
         # "no tunnel, no leak" now that jail-side pf is off the table.
         pf_conf = Path("/etc/pf.conf")
-        marker = "# freebsd-media-setup vpn kill-switch"
+        marker = KILLSWITCH_MARKER
         text = pf_conf.read_text() if pf_conf.exists() else ""
         if marker not in text:
             snippet = render_text(
@@ -1038,3 +1063,13 @@ ORDER = [
     ("Desktop dashboard",      install_dashboard),
     ("Local AI (GLM)",         install_local_ai),
 ]
+
+# A distribution that ships this project behind its own front end (CopperBSD
+# does) adds lib/distro.py to swap or drop steps. The file does not exist in
+# this repo, so a plain FreeBSD install runs ORDER exactly as written above.
+try:
+    from .distro import adjust_order
+except ImportError:
+    pass
+else:
+    ORDER = adjust_order(ORDER)

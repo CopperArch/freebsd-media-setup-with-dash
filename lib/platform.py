@@ -277,6 +277,8 @@ class Platform:
     def detect_wan_interface(self) -> str:
         """The interface the default route goes out -- what pf NATs jail
         traffic through. Empty string if there's no default route yet."""
+        if not have("route"):      # a non-FreeBSD dry-run host
+            return ""
         p = run(["route", "-n", "get", "default"], quiet=True)
         for line in p.stdout.splitlines():
             line = line.strip()
@@ -377,7 +379,9 @@ class Platform:
             if len(parts) >= 3 and parts[2] == "/":
                 root_dev = parts[0]
                 break
-        if "/" not in root_dev:
+        # A device node (/dev/ada0p2 -- a UFS root) is not a ZFS dataset, and
+        # on a non-FreeBSD dry-run host there may be no zpool at all.
+        if "/" not in root_dev or root_dev.startswith("/") or not have("zpool"):
             return set()
         pool = root_dev.split("/", 1)[0]
         zp = run(["zpool", "status", pool], quiet=True)

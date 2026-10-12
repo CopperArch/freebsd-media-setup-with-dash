@@ -13,6 +13,7 @@ reproduce a box.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -20,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lib.platform import Platform          # noqa: E402
 from lib.profile import Profile            # noqa: E402
 from lib.steps import Ctx, ORDER           # noqa: E402
-from lib.util import Sudo, log             # noqa: E402
+from lib.util import Sudo, have, log       # noqa: E402
 
 
 def accept_factory(assume_yes: bool):
@@ -60,6 +61,18 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="show, change nothing")
     ap.add_argument("--yes", action="store_true", help="accept every step")
     args = ap.parse_args()
+
+    if os.geteuid() != 0 and not args.dry_run:
+        # Every step writes system files directly (pf.conf, jail roots,
+        # root's crontab), so a run as an ordinary user fails halfway
+        # through. Hand over to root up front instead.
+        for tool in ("doas", "sudo"):
+            if have(tool):
+                log(f"Not running as root -- re-running through {tool}")
+                os.execvp(tool, [tool, sys.executable,
+                                 str(Path(__file__).resolve()), *sys.argv[1:]])
+        log("This installer must be run as root.")
+        return 2
 
     plat = Platform.detect()
     log(f"Detected: {plat.pretty}")
@@ -215,6 +228,10 @@ def main() -> int:
     # Always saved, whether or not --save-profile was passed: a credential
     # that only ever existed in this process's memory (typed in, or
     # auto-generated) is one bad Ctrl-C away from being lost for good.
+    if args.dry_run:
+        # "change nothing" includes not writing the profile (and its secrets)
+        log("\nDry run complete -- nothing was changed or saved.")
+        return 0 if not failed else 1
     default_save = Path("/root/.config/freebsd-media-setup/profile-used.yaml")
     default_save.parent.mkdir(parents=True, exist_ok=True)
     profile.save(default_save)
