@@ -491,7 +491,7 @@ def set_daily_routine_schedule(frequency, time_str):
     if not m:
         return False, "time must be HH:MM (24h)"
     hh, mm = m.group(1), m.group(2)
-    script = _HOME / ".hermes/scripts/daily-routine.sh"
+    script = _HOME / ".dbmedia/scripts/daily-routine.sh"
     if not script.exists():
         return False, f"{script} not found -- is the daily routine installed?"
     expr = _cron_expr(frequency, hh, mm)
@@ -594,9 +594,9 @@ def fix_pkg_upgrade(args):
 
 
 def fix_daily_routine_quick(args):
-    # Not under BIN: install_daily_routine deploys this to ~/.hermes/scripts,
+    # Not under BIN: install_daily_routine deploys this to ~/.dbmedia/scripts,
     # not ~/.local/bin -- it predates the dashboard and was never moved.
-    script = _HOME / ".hermes/scripts/daily-routine.sh"
+    script = _HOME / ".dbmedia/scripts/daily-routine.sh"
     if not script.exists():
         return False, "daily-routine.sh not found"
     rc, out = sh(["sh", str(script), "--quick"], timeout=1800)

@@ -712,7 +712,13 @@ def install_daily_routine(ctx: Ctx, accept) -> tuple[bool, str]:
                   f"at {ctx.profile.daily_routine_time}?"):
         return False, "declined"
     def do(c):
-        dst = Path(c.v["HOME"]) / ".hermes" / "scripts" / "daily-routine.sh"
+        # State dir was ~/.hermes in earlier releases — carry an existing
+        # one over so logs and state survive the rename.
+        old_state = Path(c.v["HOME"]) / ".hermes"
+        new_state = Path(c.v["HOME"]) / ".dbmedia"
+        if old_state.is_dir() and not new_state.exists():
+            old_state.rename(new_state)
+        dst = new_state / "scripts" / "daily-routine.sh"
         render_file(c.tpl / "daily-routine.sh", dst, c.v, mode=0o755)
         expr = cron_expr(c.profile.daily_routine_frequency, c.profile.daily_routine_time)
         entries = [f"{expr} {dst} >/dev/null 2>&1"]
