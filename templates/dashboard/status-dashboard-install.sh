@@ -88,16 +88,18 @@ if $TTYD_OK; then
   # lets the page pick a pane, --writable grants a real shell on loopback only.
   TTYD_CMD="ttyd --port 7682 --interface 127.0.0.1 --writable --check-origin --url-arg --max-clients 2 --client-option fontSize=13 --client-option cursorBlink=true $BIN/dashboard-pane.sh"
 fi
-# NOTE: the repair-server watchdog line lives in ROOT's crontab, set up
-# separately by lib/steps.py::install_dashboard, not here -- see the header
-# comment. This script only owns the collector and ttyd.
+# NOTE: the repair-server watchdog AND the collector live in ROOT's crontab,
+# set up by lib/steps.py::install_dashboard, not here. The collector reads
+# every jail through `bastille cmd`, which only root may run; as this user it
+# reported no health, no versions and a permanently "unhealthy" VPN. This
+# script only owns ttyd (and removes the collector line older versions put
+# in this user's crontab).
 CRON_TMP="$(mktemp)"
 crontab -l 2>/dev/null | grep -v '# status-dashboard' > "$CRON_TMP" || true
 {
-  echo "* * * * * $BIN/status-collect.py >/dev/null 2>&1  # status-dashboard collector"
   [ -n "$TTYD_CMD" ] && echo "* * * * * pgrep -x ttyd >/dev/null 2>&1 || /usr/sbin/daemon -r -o $LOG $TTYD_CMD  # status-dashboard ttyd watchdog"
 } >> "$CRON_TMP"
-crontab "$CRON_TMP" && { say "[FIX] cron: collector + ttyd watchdog"; changed=1; }
+crontab "$CRON_TMP" && { say "[FIX] cron: ttyd watchdog"; changed=1; }
 rm -f "$CRON_TMP"
 
 # Kick ttyd now so the terminal panes work before next minute (the repair

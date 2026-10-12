@@ -33,13 +33,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from status_keys import load_env, load_group, jail_ip
+from status_keys import (HOME_DIR, installed_jails, jail_ip, load_env,
+                         load_group)
 
-OUT_DIR = Path.home() / ".local/share/status-dashboard"
+OUT_DIR = HOME_DIR / ".local/share/status-dashboard"
 OUT_FILE = OUT_DIR / "status.json"
-LOG_DIR = Path.home() / ".dbmedia/maintenance-logs"
+LOG_DIR = HOME_DIR / ".dbmedia/maintenance-logs"
 
-EXPECTED_VPN_COUNTRY = "Netherlands"
+# Set to a country name to be warned when the tunnel exits somewhere else;
+# blank (the default) means any exit country is fine.
+EXPECTED_VPN_COUNTRY = ""
 DAILY_ROUTINE_NEXT_RUN = "03:00 daily"
 INTERESTING_MOUNTS = {"/", "{{MEDIA_POOL}}", "{{NEXTCLOUD_DATA}}",
                       "/var", "/usr", "/boot", "/tmp"}
@@ -47,8 +50,11 @@ INTERESTING_MOUNTS = {"/", "{{MEDIA_POOL}}", "{{NEXTCLOUD_DATA}}",
 # Managed jails and the port each app's WebUI/API listens on inside its jail.
 # The collector runs on the host and reaches jails on the bastille0 bridge by
 # IP (subnet.N), so probes target the jail IP, not localhost.
-JAILS = ["jellyfin", "plex", "prowlarr", "bazarr", "seerr", "caddy", "nextcloud", "nextcloud-db",
-         "vpn", "qbittorrent", "sonarr", "radarr"]
+# Only the jails that exist on this machine: a stack the profile left off
+# (VPN, Nextcloud) is not installed, and must not be reported as down.
+JAILS = installed_jails(
+    ["jellyfin", "plex", "prowlarr", "bazarr", "seerr", "caddy", "nextcloud",
+     "nextcloud-db", "vpn", "qbittorrent", "sonarr", "radarr"])
 PORTS = {"jellyfin": 8096, "plex": 32400, "prowlarr": 9696, "bazarr": 6767,
          "seerr": 5055, "caddy": 80, "nextcloud": 80, "qbittorrent": 8080, "sonarr": 8989,
          "radarr": 7878}
@@ -65,18 +71,18 @@ PROWLARR = {"url": _url("prowlarr"), "key": KEYS.get("PROWLARR_KEY", "")}
 JELLYFIN = {"url": _url("jellyfin"), "key": KEYS.get("JELLYFIN_KEY", "")}
 PLEX = {"url": _url("plex"), "token": None}
 
-SERVICE_PROBES = [
-    ("qBittorrent", _url("qbittorrent"), (200, 401, 403)),
-    ("Prowlarr", _url("prowlarr"), (200, 401)),
-    ("Radarr", _url("radarr"), (200, 401)),
-    ("Sonarr", _url("sonarr"), (200, 401)),
-    ("Seerr", _url("seerr"), (200, 307, 302)),
-    ("Plex", _url("plex", "/identity"), (200,)),
-    ("Jellyfin", _url("jellyfin", "/health"), (200,)),
-    ("Bazarr", _url("bazarr"), (200, 401, 302)),
-    ("Caddy", _url("caddy"), (200, 301, 302, 308, 404, 502)),
-    ("Nextcloud", _url("nextcloud", "/status.php"), (200,)),
-]
+SERVICE_PROBES = [(label, _url(jail, path), codes) for label, jail, path, codes in (
+    ("qBittorrent", "qbittorrent", "", (200, 401, 403)),
+    ("Prowlarr", "prowlarr", "", (200, 401)),
+    ("Radarr", "radarr", "", (200, 401)),
+    ("Sonarr", "sonarr", "", (200, 401)),
+    ("Seerr", "seerr", "", (200, 307, 302)),
+    ("Plex", "plex", "/identity", (200,)),
+    ("Jellyfin", "jellyfin", "/health", (200,)),
+    ("Bazarr", "bazarr", "", (200, 401, 302)),
+    ("Caddy", "caddy", "", (200, 301, 302, 308, 404, 502)),
+    ("Nextcloud", "nextcloud", "/status.php", (200,)),
+) if jail in JAILS]
 
 # The VPN "hub" jail and the jails confined to its tunnel (was gluetun netns).
 GROUP_HUB, GROUP_MEMBERS = load_group()
@@ -107,8 +113,29 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _no_redirect_opener = urllib.request.build_opener(_NoRedirect)
 
 
+_reach = {}
+
+
+def reachable(url):
+    """One short TCP connect per host:port per run. A stopped jail's address
+    answers nothing at all, and without this every API call to it waits out
+    its own 20-25 s timeout -- the collector then takes longer than the
+    minute between its runs."""
+    u = urllib.parse.urlsplit(url)
+    key = (u.hostname, u.port or (443 if u.scheme == "https" else 80))
+    if key not in _reach:
+        try:
+            socket.create_connection(key, timeout=3).close()
+            _reach[key] = True
+        except OSError:
+            _reach[key] = False
+    return _reach[key]
+
+
 def http(url, headers=None, timeout=TIMEOUT, data=None, method=None,
          follow_redirects=True):
+    if not reachable(url):
+        return None, ""
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     opener = urllib.request.urlopen if follow_redirects else _no_redirect_opener.open
     try:
@@ -392,11 +419,15 @@ def collect_vpn():
     # Which VPN this is: written by the installer and by the dashboard's
     # Change VPN provider dialog.
     try:
-        info["provider"] = (Path.home() / ".config/status-dashboard/vpn-name"
+        info["provider"] = (HOME_DIR / ".config/status-dashboard/vpn-name"
                             ).read_text().strip() or None
     except OSError:
         pass
 
+    if GROUP_HUB not in JAILS:
+        # the VPN stack was never installed here: nothing to be unhealthy
+        info.update(installed=False, vpn_type=None)
+        return info
     if GROUP_HUB not in _running_jails():
         info["healthy"] = "hub down"
         info["siblings_ok"] = False
@@ -405,24 +436,30 @@ def collect_vpn():
     info["configured"] = Path(f"/usr/local/bastille/jails/{GROUP_HUB}/root"
                               "/usr/local/etc/wireguard/wg0.conf").exists()
 
-    # Health is decided by the exit-IP comparison below -- the same
-    # "trust the tunnel, not the wrapper" rule daily-routine.sh uses. (An
-    # earlier draft also parsed wg's handshake age here, but the check was
-    # dead code -- its second operand sliced to an empty string and the
-    # result was never consumed.)
-    exit_ip = jexec(GROUP_HUB, ["fetch", "-qo", "-", "https://api.ipify.org"], timeout=15).strip()
-    host_ip = run(["fetch", "-qo", "-", "https://api.ipify.org"], timeout=15).strip()
-    info["ip"] = exit_ip or None
-    info["healthy"] = "healthy" if (exit_ip and exit_ip != host_ip) else "unhealthy"
+    # Without a WireGuard config there is no tunnel to measure: the exit-IP
+    # comparison below would only report this machine's own address as an
+    # "unhealthy" VPN.
+    if info["configured"]:
+        # Health is decided by the exit-IP comparison below -- the same
+        # "trust the tunnel, not the wrapper" rule daily-routine.sh uses. (An
+        # earlier draft also parsed wg's handshake age here, but the check was
+        # dead code -- its second operand sliced to an empty string and the
+        # result was never consumed.)
+        exit_ip = jexec(GROUP_HUB, ["fetch", "-qo", "-", "https://api.ipify.org"], timeout=15).strip()
+        host_ip = run(["fetch", "-qo", "-", "https://api.ipify.org"], timeout=15).strip()
+        info["ip"] = exit_ip or None
+        info["healthy"] = "healthy" if (exit_ip and exit_ip != host_ip) else "unhealthy"
 
-    # country lookup (best-effort, through the tunnel)
-    geo = jexec(GROUP_HUB, ["fetch", "-qo", "-",
-                            f"https://ipapi.co/{exit_ip}/country_name/"], timeout=12).strip()
-    info["country"] = geo or None
+        # country lookup (best-effort, through the tunnel)
+        geo = jexec(GROUP_HUB, ["fetch", "-qo", "-",
+                                f"https://ipapi.co/{exit_ip}/country_name/"], timeout=12).strip()
+        info["country"] = geo or None
 
     # confined jails: default route must be the vpn jail IP
     vpn_ip = jail_ip(GROUP_HUB)
     for name in GROUP_MEMBERS:
+        if name not in JAILS:
+            continue
         dr = run(["bastille", "sysrc", name, "-n", "defaultrouter"], timeout=10).strip()
         # `bastille sysrc -n` prints the value; fall back to jexec route -n get
         bound = (vpn_ip in dr) if dr else False
@@ -594,7 +631,8 @@ def collect_media():
 
     jobs = {"radarr": radarr, "sonarr": sonarr, "prowlarr": prowlarr,
             "qbittorrent": qbittorrent, "jellyfin": jellyfin}
-    tok = plex_token()
+    jobs = {name: fn for name, fn in jobs.items() if name in JAILS}
+    tok = plex_token() if "plex" in JAILS else None
     if tok:
         jobs["plex"] = lambda: plex(tok)
     with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
@@ -645,7 +683,7 @@ def _read_daily_routine_schedule():
     schedule changes visible here at all. Fallback: parse the crontab tag
     block directly -- only possible when running as root (the repair
     server's recollect path), where `crontab -l` is root's own table."""
-    sched_file = Path.home() / ".config/status-dashboard/routine-schedule.json"
+    sched_file = HOME_DIR / ".config/status-dashboard/routine-schedule.json"
     try:
         data = json.loads(sched_file.read_text())
         hh_s, mm_s = str(data["time"]).split(":")
@@ -789,7 +827,7 @@ def build_attention(host, disks, docker, vpn, services, media, routine,
                 f"curl -v {s['url']}",
                 {"id": "jail_restart", "args": {"name": jn}, "label": f"Restart {jn}"} if jn else None)
 
-    if isinstance(vpn, dict) and not vpn.get("error"):
+    if isinstance(vpn, dict) and not vpn.get("error") and vpn.get("installed", True):
         if not vpn.get("configured", True):
             add(todo, "vpn", "No WireGuard config set -- qBittorrent/Sonarr/Radarr "
                 "have no internet access until one is added (any provider works, "
@@ -810,7 +848,8 @@ def build_attention(host, disks, docker, vpn, services, media, routine,
                 f"Not routed through the VPN jail: {', '.join(broken)} — traffic may bypass the tunnel",
                 "check defaultrouter in the confined jails",
                 {"id": "vpn_recreate", "args": {}, "label": "Restart the VPN jail group"})
-        if vpn.get("country") and vpn["country"] != EXPECTED_VPN_COUNTRY:
+        if (EXPECTED_VPN_COUNTRY and vpn.get("country")
+                and vpn["country"] != EXPECTED_VPN_COUNTRY):
             add(warning, "vpn", f"VPN exit is {vpn['country']}, expected {EXPECTED_VPN_COUNTRY}",
                 "bastille cmd vpn wg show", {"id": "vpn_rotate", "args": {}, "label": "Restart VPN tunnel"})
 

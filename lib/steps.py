@@ -956,6 +956,17 @@ def install_dashboard(ctx: Ctx, accept) -> tuple[bool, str]:
         server_ok = c.plat.crontab_user(
             c.sudo, [f"* * * * * {launch}  # status-dashboard server watchdog"],
             "root", tag="dashboard-watchdog")
+        # The collector runs as root as well: everything it reports about a
+        # jail (service health, versions, the VPN's exit address) comes from
+        # `bastille cmd`, which only root may run. DASHBOARD_HOME points it
+        # at this user's data directory, as for the server.
+        collect = (f"env DASHBOARD_HOME={home} python3.11 "
+                   f"{bin_dir}/status-collect.py")
+        c.plat.crontab_user(
+            c.sudo, [f"* * * * * {collect} >/dev/null 2>&1  # status-dashboard collector"],
+            "root", tag="dashboard-collector")
+        c.sudo.run(["sh", "-c", f"({collect}) < /dev/null > /dev/null 2>&1 &"],
+                   timeout=30)
         # Backgrounded and fully redirected, not just piped through -o: this
         # call goes through Python's own capturing subprocess.run(), and
         # daemon(8) doesn't always finish detaching from the invoking shell
