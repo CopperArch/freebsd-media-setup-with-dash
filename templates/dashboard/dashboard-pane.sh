@@ -292,7 +292,7 @@ case "$PROG" in
         fallback "ncdu" ;;
     routine)
         hr "Latest daily-routine log"
-        L=$(ls -t "$HOME"/.hermes/maintenance-logs/daily-routine-*.log 2>/dev/null | head -1)
+        L=$(ls -t "$HOME"/.dbmedia/maintenance-logs/daily-routine-*.log 2>/dev/null | head -1)
         [[ -n "$L" ]] && less +G "$L" || echo "no daily-routine logs yet"
         fallback "log viewer" ;;
     *)

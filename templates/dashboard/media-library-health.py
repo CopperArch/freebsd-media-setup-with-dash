@@ -8,7 +8,7 @@ Nightly (daily-routine.sh), after the misfiled-media sort. Three jobs:
    (scanned before the option was on) never got grouped: 2026-10-05 only 242
    of 1534 movies were in any of the 65 collections. Here every movie's TMDB
    collection is looked up (via Radarr's metadata proxy, cached in
-   ~/.hermes/state/tmdb-collections.json so a normal night only looks up new
+   ~/.dbmedia/state/tmdb-collections.json so a normal night only looks up new
    movies), and for every collection with 2+ movies in the library the
    matching Jellyfin collection is created or topped up. Members are only ever
    added — a hand-built collection or hand-added movie is never removed.
@@ -69,7 +69,7 @@ class _sh:
 RADARR, JELLYFIN = _sh.RADARR, _sh.JELLYFIN
 
 PLEX_URL = _sc.PLEX["url"]
-CACHE = Path("{{HOME}}") / ".hermes/state/tmdb-collections.json"
+CACHE = Path("{{HOME}}") / ".dbmedia/state/tmdb-collections.json"
 CACHE_DAYS = 60          # re-check a movie's collection membership this often
 MIN_COLLECTION = 2       # same threshold Plex is set to
 

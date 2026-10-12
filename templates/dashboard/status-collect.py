@@ -37,7 +37,7 @@ from status_keys import load_env, load_group, jail_ip
 
 OUT_DIR = Path.home() / ".local/share/status-dashboard"
 OUT_FILE = OUT_DIR / "status.json"
-LOG_DIR = Path.home() / ".hermes/maintenance-logs"
+LOG_DIR = Path.home() / ".dbmedia/maintenance-logs"
 
 EXPECTED_VPN_COUNTRY = "Netherlands"
 DAILY_ROUTINE_NEXT_RUN = "03:00 daily"

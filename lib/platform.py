@@ -322,7 +322,7 @@ class Platform:
         The installer itself always runs as root (jail/pkg work requires
         it), so a bare `crontab -l` / `crontab -` here edits ROOT's
         crontab, not the target user's -- the routine gets deployed to
-        ~/.hermes for the profile's user but the cron entry that's meant
+        ~/.dbmedia for the profile's user but the cron entry that's meant
         to run it silently lands somewhere else entirely. -u makes the
         target explicit; the new table goes through a temp file rather
         than stdin since Sudo.run() has no stdin-piping path.
