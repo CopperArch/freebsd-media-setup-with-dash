@@ -367,10 +367,16 @@
       <h3>Change VPN provider</h3>
       <div class="log" style="padding:12px 15px">
         <div class="tiny muted" style="margin-bottom:8px">
-          Get a free/cheap WireGuard config from any provider, then paste the
-          whole file below — private key, public key and endpoint all get
-          pulled out of it automatically.
+          Get a WireGuard config from any provider — or from a WireGuard
+          server of your own — then paste the whole file below. Private key,
+          public key, endpoint and any pre-shared key are pulled out of it
+          automatically.
         </div>
+        <input id="vpn-conf-name" maxlength="40" autocomplete="off"
+          placeholder="Name to show on the dashboard (e.g. Mullvad, Home server) — blank to guess"
+          style="width:100%;box-sizing:border-box;background:var(--panel);color:var(--fg);
+                 border:1px solid var(--edge);border-radius:6px;padding:7px 8px;
+                 font:12px inherit;margin-bottom:10px">
         <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px">
           <button class="fixbtn" data-open="protonvpn_wg">ProtonVPN (free)</button>
           <button class="fixbtn" data-open="windscribe_wg">Windscribe (free)</button>
@@ -1086,12 +1092,12 @@ $("vpn-conf-save").onclick = async () => {
   try{
     const res = await fetch("api/vpn-config", {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({config: text}),
+      body: JSON.stringify({config: text, name: $("vpn-conf-name").value}),
     });
     const r = await res.json();
     setNote(r.output || (r.ok? "done" : "failed"), r.ok);
     if(r.ok){
-      setTimeout(() => { $("vpn-overlay").classList.remove("on"); $("vpn-conf-text").value=""; }, 1200);
+      setTimeout(() => { $("vpn-overlay").classList.remove("on"); $("vpn-conf-text").value=""; $("vpn-conf-name").value=""; }, 1200);
       await fetch("api/refresh", {method:"POST"}); await tick();
     }
   }catch(e){ setNote("request failed: " + e, false); }
@@ -1286,7 +1292,9 @@ function renderServices(d){
   let out="";
   if(v && !v.error){
     const bad = v.healthy!=="healthy" || !v.siblings_ok;
-    out += `<div class="row"><span class="dot ${bad?"f":""}"></span><span class="k">VPN exit</span>
+    out += `<div class="row"><span class="dot ${bad?"f":""}"></span><span class="k">VPN</span>
+            <span class="v">${esc(v.provider||"not named")} <span class="muted">${esc(v.vpn_type||"")}</span></span></div>
+            <div class="row tiny"><span class="k">exit</span>
             <span class="v">${esc(v.ip||"?")} <span class="muted">${esc(v.country||"")}</span></span></div>
             <div class="row tiny"><span class="k">tunnel</span><span class="v">${esc(v.healthy||"?")} · route ${v.siblings_ok?"bound ✓":"<span class='stale'>BROKEN</span>"}</span></div>`;
     const unbound=(v.siblings||[]).filter(x=>!x.bound);

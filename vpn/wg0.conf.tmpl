@@ -9,8 +9,10 @@
 #
 # Most commercial providers (Mullvad, Surfshark, PIA, ProtonVPN...) give you a
 # WireGuard config directly — paste its values into the profile and this
-# template renders them here. Unlike OpenVPN/gluetun there is no username/
-# password; WireGuard authenticates with keypairs.
+# template renders them here. Your own WireGuard server works the same way:
+# its public key, endpoint, and the address/keys it issued this peer. Unlike
+# OpenVPN/gluetun there is no username/password; WireGuard authenticates with
+# keypairs.
 
 [Interface]
 # Private key for THIS peer — generate once with `wg genkey`, keep it 0600.
@@ -32,6 +34,7 @@ MTU = 1420
 
 [Peer]
 PublicKey = {{WG_PEER_PUBLIC_KEY}}
+{{WG_PSK_LINE}}
 # Provider endpoint (host:port). Point it at a different server to change
 # exit location (or paste a whole new provider config via the dashboard's
 # Change-VPN-provider action), then `service wireguard restart` inside the

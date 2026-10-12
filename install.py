@@ -120,7 +120,8 @@ def main() -> int:
                 "  Windscribe (free): https://windscribe.com/getconfig/wireguard\n"
                 "  Surfshark:         https://surfshark.com/download/router  "
                 "(Manual setup -> WireGuard)\n"
-                "Or paste values from any other provider's WireGuard config. "
+                "Or paste values from any other provider's WireGuard config -- "
+                "or from a WireGuard server of your own. "
                 "Leave all three blank to set this up later -- qBittorrent/"
                 "Sonarr/Radarr just won't have internet access until you do.")
             profile.wg_private_key = ask("WireGuard private key",
@@ -129,6 +130,11 @@ def main() -> int:
                                              profile.wg_peer_public_key)
             profile.wg_endpoint = ask("WireGuard endpoint (host:port)",
                                       profile.wg_endpoint)
+            profile.wg_preshared_key = ask("WireGuard pre-shared key (blank if none)",
+                                           profile.wg_preshared_key)
+            profile.vpn_provider = ask(
+                "Name for this VPN on the dashboard (e.g. Mullvad, or 'Home "
+                "server' for your own -- blank to guess)", profile.vpn_provider)
 
         log("\n=== Public access (reach your apps from outside the LAN) ===\n"
             "Every app gets reverse-proxied through Caddy under its own "

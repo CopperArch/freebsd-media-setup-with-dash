@@ -386,8 +386,16 @@ def collect_vpn():
     'healthy' == 'healthy' when the tunnel's exit IP differs from the host WAN.
     'siblings' are the confined jails; 'bound' means their default route is the
     vpn jail (the FreeBSD analogue of sharing gluetun's netns)."""
-    info = {"ip": None, "country": None, "city": None, "healthy": None,
+    info = {"provider": None, "vpn_type": "WireGuard",
+            "ip": None, "country": None, "city": None, "healthy": None,
             "siblings": [], "siblings_ok": True, "configured": True}
+    # Which VPN this is: written by the installer and by the dashboard's
+    # Change VPN provider dialog.
+    try:
+        info["provider"] = (Path.home() / ".config/status-dashboard/vpn-name"
+                            ).read_text().strip() or None
+    except OSError:
+        pass
 
     if GROUP_HUB not in _running_jails():
         info["healthy"] = "hub down"

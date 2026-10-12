@@ -338,6 +338,17 @@ else
     log "  [SKIP] media-library-health.py not installed"
 fi
 
+# ─── 3d. Jellyfin duplicate removal (DELETES losing files) ─────────────────
+# Keeps the best copy of a movie/episode stored twice and deletes the rest;
+# skips itself until ~/.dbmedia/jellyfin-api-key exists — creating that file
+# is the opt-in.
+banner "Jellyfin Duplicate Removal"
+if [ -x "$ROOT/.local/bin/jellyfin-duplicates.py" ]; then
+    "$ROOT/.local/bin/jellyfin-duplicates.py" --apply 2>&1 | tee -a "$LOG"
+else
+    log "  [SKIP] jellyfin-duplicates.py not installed"
+fi
+
 # ─── 4. Host base + package updates ─────────────────────────────────────────
 banner "Host Updates"
 log "  pkg upgrade (host)"
