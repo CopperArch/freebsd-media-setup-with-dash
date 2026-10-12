@@ -327,17 +327,32 @@ banner "Media Stack Update (verify + rollback)"
 # pkg, which is exactly the "reviewed, pinned" model we want. We snapshot each
 # jail (ZFS) before upgrading so a bad pkg can be rolled back instantly.
 for j in $ALL_JAILS; do
-    ds=$(bastille config "$j" get zfs.dataset 2>/dev/null)
-    snap="preupdate-$(date +%Y%m%d)"
-    [ -n "$ds" ] && zfs snapshot "${ds}@${snap}" 2>/dev/null && \
+    # The dataset behind the jail's root. (`bastille config <jail> get
+    # zfs.dataset` answers "not set" here, which an earlier version took for
+    # a dataset name -- so no snapshot was ever made and the rollback below
+    # had nothing to roll back to.)
+    ds=$(zfs list -H -o name "/usr/local/bastille/jails/$j/root" 2>/dev/null)
+    case "$ds" in */jails/"$j"/root) ;; *) ds="" ;; esac
+    snap="preupdate-$(date +%Y%m%d-%H%M)"
+    if [ -n "$ds" ] && zfs snapshot "${ds}@${snap}" 2>/dev/null; then
         log "  snapshot ${ds}@${snap}"
+        # keep the seven newest pre-update snapshots of this jail
+        old=$(zfs list -H -t snapshot -o name -S creation "$ds" 2>/dev/null \
+              | grep '@preupdate-' | tail -n +8)
+        for s in $old; do zfs destroy "$s" 2>/dev/null; done
+    else
+        ds=""
+    fi
     if bastille pkg "$j" upgrade -y >>"$LOG" 2>&1; then
         # verify the jail's primary service still answers after upgrade
         if jls -j "$j" >/dev/null 2>&1; then
             log "  [OK]   $j upgraded and still healthy"
         else
             warn "  [ROLLBACK] $j unhealthy after upgrade — rolling back snapshot"
-            [ -n "$ds" ] && zfs rollback "${ds}@${snap}" && bastille restart "$j"
+            if [ -n "$ds" ]; then
+                bastille stop "$j" >>"$LOG" 2>&1
+                zfs rollback -r "${ds}@${snap}" && bastille start "$j" >>"$LOG" 2>&1
+            fi
         fi
     else
         warn "  [WARN] pkg upgrade failed in $j (left as-is)"

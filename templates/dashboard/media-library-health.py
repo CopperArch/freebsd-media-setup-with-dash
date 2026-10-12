@@ -615,12 +615,19 @@ def check_plex(tok):
 
 def main():
     print("  --- media library health ---", flush=True)
-    sync_jellyfin_collections()
-    try:
-        apply_manual_jellyfin()
-    except Exception as e:          # noqa: BLE001
-        log(f"  [FAIL] hand-made Jellyfin collections ({e})")
-    check_jellyfin_images()
+    if JELLYFIN.get("key"):
+        sync_jellyfin_collections()
+        try:
+            apply_manual_jellyfin()
+        except Exception as e:          # noqa: BLE001
+            log(f"  [FAIL] hand-made Jellyfin collections ({e})")
+        check_jellyfin_images()
+    else:
+        # a new install: Jellyfin has no API key until its first-run wizard
+        # has been completed and one is created -- not a fault
+        log("  [SKIP] no Jellyfin API key yet -- finish Jellyfin's setup, create "
+            "a key (Dashboard -> API Keys) and put it in "
+            "~/.config/status-dashboard/media-keys.env as JELLYFIN_KEY")
     tok = plex_token()
     if tok:
         try:
@@ -629,7 +636,8 @@ def main():
         except Exception as e:      # noqa: BLE001
             log(f"  [FAIL] Plex check failed ({e})")
     else:
-        log("  [FAIL] Plex token not found (container down?) — skipped")
+        log("  [SKIP] Plex is not signed in yet -- open its web page once "
+            "and claim the server")
     _sh.flush_alerts()
     return 0
 
