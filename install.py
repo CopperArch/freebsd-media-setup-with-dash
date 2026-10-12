@@ -215,6 +215,10 @@ def main() -> int:
     # Always saved, whether or not --save-profile was passed: a credential
     # that only ever existed in this process's memory (typed in, or
     # auto-generated) is one bad Ctrl-C away from being lost for good.
+    if args.dry_run:
+        # "change nothing" includes not writing the profile (and its secrets)
+        log("\nDry run complete -- nothing was changed or saved.")
+        return 0 if not failed else 1
     default_save = Path("/root/.config/freebsd-media-setup/profile-used.yaml")
     default_save.parent.mkdir(parents=True, exist_ok=True)
     profile.save(default_save)

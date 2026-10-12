@@ -630,6 +630,35 @@ def fix_pkg_upgrade(args):
     return rc == 0, out[-3500:] or "pkg upgrade complete"
 
 
+# ── CopperBSD only: update the distribution to the latest version on GitHub ─
+# CopperBSD ships this project behind its own dashboard and installs an
+# updater at the path below. It does not exist on a plain FreeBSD install, so
+# both entry points report that and do nothing there.
+UPDATER = "/usr/local/libexec/copperbsd-update"
+
+
+def update_check():
+    """installed/latest CopperBSD version, for the dashboard's Update button.
+    Read-only: the updater's --check only fetches the VERSION file."""
+    info = {"installed": "unknown", "latest": "unknown", "available": "unknown"}
+    if not Path(UPDATER).exists():
+        info["error"] = "updater not installed"
+        return info
+    rc, out = sh([UPDATER, "--check"], timeout=45)
+    for line in (out or "").splitlines():
+        k, sep, v = line.partition("=")
+        if sep and k.strip() in info:
+            info[k.strip()] = v.strip()[:40]
+    return info
+
+
+def fix_copperbsd_update(args):
+    if not Path(UPDATER).exists():
+        return False, "the CopperBSD updater is not installed on this system"
+    rc, out = sh(_root_argv([UPDATER]), timeout=3600)
+    return rc == 0, out[-3500:] or "update finished"
+
+
 def fix_daily_routine_quick(args):
     # Not under BIN: install_daily_routine deploys this to ~/.dbmedia/scripts,
     # not ~/.local/bin -- it predates the dashboard and was never moved.
@@ -685,6 +714,7 @@ FIXES = {
     "daily_routine_quick": fix_daily_routine_quick,
     "restart_service": fix_restart_service,
     "pool_add_drive": fix_pool_add_drive,
+    "copperbsd_update": fix_copperbsd_update,
 }
 
 
@@ -869,6 +899,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200, {"panes": available_panes()})
         if route == "/api/ask-targets":
             return self._json(200, {"targets": ask_targets()})
+        if route == "/api/update-check":
+            return self._json(200, update_check())
         if route.startswith("/api/"):
             return self._json(404, {"error": "not found"})
         return super().do_GET()
