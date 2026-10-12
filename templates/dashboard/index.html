@@ -1290,7 +1290,15 @@ function renderMedia(d){
 function renderServices(d){
   const s=d.services||[], v=d.vpn||{};
   let out="";
-  if(v && !v.error){
+  // Three states: no VPN jail on this machine (nothing shown), a VPN jail
+  // still waiting for its WireGuard config, and a configured tunnel.
+  if(v && !v.error && v.installed!==false && v.configured===false){
+    out += `<div class="row"><span class="dot w"></span><span class="k">VPN</span>
+            <span class="v stale">not set up</span></div>
+            <div class="row tiny muted" style="white-space:normal">qBittorrent, Sonarr and Radarr stay offline until the VPN
+            has a WireGuard config. Paste the .conf file from your provider, or from your own server.</div>
+            <div class="row" style="margin-top:4px"><button class="fixbtn" id="vpn-change-btn">Add a VPN</button></div>`;
+  } else if(v && !v.error && v.installed!==false){
     const bad = v.healthy!=="healthy" || !v.siblings_ok;
     out += `<div class="row"><span class="dot ${bad?"f":""}"></span><span class="k">VPN</span>
             <span class="v">${esc(v.provider||"not named")} <span class="muted">${esc(v.vpn_type||"")}</span></span></div>

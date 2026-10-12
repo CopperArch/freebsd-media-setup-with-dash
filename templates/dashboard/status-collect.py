@@ -253,8 +253,19 @@ def collect_host():
                            or (installed_k and installed_k != running_k))
 
     # rc services that are enabled but not currently running
+    # Only services this machine has switched on -- a fixed list reported
+    # ntpd and sddm as failures on every box that simply does not use them.
+    # bastille is not in it: its rc script starts the jails and exits, so
+    # "not running" is its normal state (the jails themselves are reported
+    # under their own heading).
     failed = []
-    for svc in ("bastille", "pf", "sddm", "sshd", "ntpd"):
+    for svc in ("pf", "sddm", "sshd", "ntpd"):
+        try:
+            if subprocess.run(["service", svc, "enabled"], capture_output=True,
+                              timeout=10).returncode != 0:
+                continue
+        except Exception:  # noqa: BLE001
+            continue
         st = run(["service", svc, "status"], timeout=10)
         if st and re.search(r"is not running|not running", st, re.I):
             failed.append(svc)
@@ -440,15 +451,23 @@ def collect_vpn():
     # comparison below would only report this machine's own address as an
     # "unhealthy" VPN.
     if info["configured"]:
-        # Health is decided by the exit-IP comparison below -- the same
-        # "trust the tunnel, not the wrapper" rule daily-routine.sh uses. (An
-        # earlier draft also parsed wg's handshake age here, but the check was
-        # dead code -- its second operand sliced to an empty string and the
-        # result was never consumed.)
+        # Health = the tunnel has completed a WireGuard handshake in the
+        # last three minutes (peers re-handshake every two while traffic
+        # flows, and PersistentKeepalive keeps it flowing). The kill-switch
+        # guarantees the confined jails have no other way out, so a live
+        # tunnel is the whole question. An earlier version compared the
+        # exit address with this machine's own instead, which called a
+        # self-hosted server on the same connection permanently unhealthy.
+        newest = 0
+        for line in jexec(GROUP_HUB, ["wg", "show", "wg0", "latest-handshakes"],
+                          timeout=10).splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[1].isdigit():
+                newest = max(newest, int(parts[1]))
+        info["healthy"] = ("healthy" if newest and time.time() - newest < 180
+                           else "unhealthy")
         exit_ip = jexec(GROUP_HUB, ["fetch", "-qo", "-", "https://api.ipify.org"], timeout=15).strip()
-        host_ip = run(["fetch", "-qo", "-", "https://api.ipify.org"], timeout=15).strip()
         info["ip"] = exit_ip or None
-        info["healthy"] = "healthy" if (exit_ip and exit_ip != host_ip) else "unhealthy"
 
         # country lookup (best-effort, through the tunnel)
         geo = jexec(GROUP_HUB, ["fetch", "-qo", "-",
@@ -839,7 +858,7 @@ def build_attention(host, disks, docker, vpn, services, media, routine,
                 "juggle a free tier's limits",
                 open_link={"id": "surfshark_wg", "label": "Get Surfshark"})
         elif vpn.get("healthy") and vpn["healthy"] != "healthy":
-            add(failed, "vpn", f"VPN tunnel is {vpn['healthy']} (exit IP not confirmed)",
+            add(failed, "vpn", f"VPN tunnel is {vpn['healthy']} (no recent WireGuard handshake)",
                 "bastille cmd vpn wg show",
                 {"id": "vpn_rotate", "args": {}, "label": "Restart tunnel / rotate exit"})
         if not vpn.get("siblings_ok"):

@@ -617,15 +617,22 @@ def _qbittorrent_skip_login(c: Ctx, name: str) -> None:
     seed it before the service has ever run."""
     conf = Path(f"/usr/local/bastille/jails/{name}/root/var/db/qbittorrent"
                "/conf/qBittorrent/config/qBittorrent.conf")
-    for _ in range(10):
+    import time
+    for _ in range(45):
         if conf.exists():
             break
-        import time; time.sleep(1)
+        time.sleep(1)
     if not conf.exists():
         return
-    text = conf.read_text()
-    if "AuthSubnetWhitelistEnabled" in text:
+    if "AuthSubnetWhitelistEnabled" in conf.read_text():
         return
+    # Stopped while it is edited: qBittorrent writes its in-memory settings
+    # back over this file when it exits, so a change made under a running
+    # daemon is lost by the very restart meant to apply it (measured on a
+    # clean install: the whitelist was never there afterwards).
+    c.plat.jail_service(c.sudo, name, "qbittorrent", "stop")
+    time.sleep(2)
+    text = conf.read_text()
     subnets = f"{c.v['SUBNET']}.0/24, {c.profile.lan_cidr}"
     block = ("[Preferences]\n"
             "WebUI\\AuthSubnetWhitelistEnabled=true\n"
@@ -635,7 +642,7 @@ def _qbittorrent_skip_login(c: Ctx, name: str) -> None:
     else:
         text = text.rstrip("\n") + "\n\n" + block
     conf.write_text(text)
-    c.plat.jail_service(c.sudo, name, "qbittorrent", "restart")
+    c.plat.jail_service(c.sudo, name, "qbittorrent", "start")
 
 
 # ── 4b. public access: Caddy reverse-proxy + dynamic DNS / Cloudflare Tunnel ──
