@@ -14,9 +14,12 @@ from pathlib import Path
 # the desktop user's -- status-dashboard-server.py runs as root (its repair
 # actions need to restart jails/services/pkg, which the desktop user can't),
 # but its data still lives under that user's actual home directory, not
-# /root. status-collect.py and friends still just run as the desktop user,
-# so Path.home() is correct for them and this env var is never set.
+# /root. status-collect.py runs as root too (from root's crontab and from the
+# server's Refresh): everything it reports about a jail comes from
+# `bastille cmd`, which only root may run. Both get DASHBOARD_HOME; a script
+# started by hand as the desktop user falls back to its own home.
 _HOME = Path(os.environ["DASHBOARD_HOME"]) if "DASHBOARD_HOME" in os.environ else Path.home()
+HOME_DIR = _HOME
 CONF_DIR = _HOME / ".config/status-dashboard"
 KEYS_FILE = CONF_DIR / "media-keys.env"
 GROUP_FILE = CONF_DIR / "vpn-group.json"
@@ -29,6 +32,22 @@ JAIL_IPS = {"jellyfin": 10, "plex": 11, "prowlarr": 12, "bazarr": 13,
             "sonarr": 22, "radarr": 23}
 
 DEFAULT_GROUP = {"hub": "vpn", "members": ["qbittorrent", "sonarr", "radarr"]}
+
+
+JAILS_DIR = Path("/usr/local/bastille/jails")
+
+
+def installed_jails(names):
+    """The subset of `names` that has actually been created on this machine.
+    A stack the profile left off (VPN, Nextcloud) has no jails at all; those
+    are "not installed", which is not the same as "down". If the jails
+    directory cannot be read, assume everything is installed rather than
+    hide a real outage."""
+    try:
+        present = {d.name for d in JAILS_DIR.iterdir() if d.is_dir()}
+    except OSError:
+        return list(names)
+    return [n for n in names if n in present]
 
 
 def jail_ip(name):

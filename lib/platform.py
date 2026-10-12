@@ -206,7 +206,11 @@ class Platform:
         already-running classic jail's alias on it)."""
         gw_ip = gateway_cidr.split("/")[0]
         current = run(["ifconfig", bridge], quiet=True).stdout
-        if gw_ip in current:
+        # Whole-address match: a plain substring test finds "10.17.0.1"
+        # inside every classic jail's alias (10.17.0.10, .11, ...), decides
+        # the gateway is already there, and never adds it -- leaving every
+        # VNET jail with no route out at all.
+        if re.search(rf"\binet {re.escape(gw_ip)}\s", current):
             return True
         ok1 = self.sysrc(sudo, f"ifconfig_{bridge}_alias0=inet {gateway_cidr}")
         ok2 = sudo.run(["ifconfig", bridge, "inet", gateway_cidr, "alias"],
@@ -230,6 +234,19 @@ class Platform:
                quiet=True)
         return p.stdout.strip().splitlines()[-1] if p.returncode == 0 and p.stdout.strip() else ""
 
+    def jail_pkgs_missing(self, sudo, name: str, pkgs: list[str]) -> list[str]:
+        """Which of `pkgs` the jail does not have yet. Answered from the
+        jail's local package database, so it works for a jail with no
+        internet access (a confined jail behind a VPN that is down). A jail
+        where pkg itself was never bootstrapped reports everything missing."""
+        missing = []
+        for pkg in pkgs:
+            p = sudo.run(["bastille", "cmd", name, "pkg", "-N", "info", "-e", pkg],
+                         timeout=60, quiet=True)
+            if p.returncode != 0:
+                missing.append(pkg)
+        return missing
+
     def jail_pkg_install(self, sudo, name: str, pkgs: list[str]) -> bool:
         p = sudo.run(["bastille", "pkg", name, "install", "-y", *pkgs],
                      timeout=3600, env=dict(os.environ, ASSUME_ALWAYS_YES="YES"))
@@ -251,6 +268,21 @@ class Platform:
         verbatim. Takes effect only after the jail is restarted."""
         return sudo.run(["bastille", "config", name, "add", key, value],
                         timeout=30).returncode == 0
+
+    def jail_set_securelevel(self, sudo, name: str, level: int) -> bool:
+        """Bastille creates every jail at securelevel 2, at which the kernel
+        refuses to load pf rules inside it ("DIOCADDRULE: Operation not
+        permitted"). Returns True when the level had to be changed, in
+        which case the jail needs a restart for it to apply."""
+        conf = Path(f"/usr/local/bastille/jails/{name}/jail.conf")
+        try:
+            if re.search(rf"^\s*securelevel\s*=\s*{level}\s*;", conf.read_text(), re.M):
+                return False
+        except OSError:
+            pass
+        sudo.run(["bastille", "config", name, "set", "securelevel", str(level)],
+                 timeout=30)
+        return True
 
     def jail_restart(self, sudo, name: str) -> bool:
         return sudo.run(["bastille", "restart", name], timeout=120).returncode == 0
@@ -306,6 +338,17 @@ class Platform:
         ok = self.sysrc(sudo, "gateway_enable=YES")
         sudo.run(["sysctl", "net.inet.ip.forwarding=1"], timeout=30)
         return ok
+
+    def sysctl_persist(self, sudo, name: str, value: str) -> bool:
+        """Set a sysctl now and on every boot (/etc/sysctl.conf)."""
+        now = sudo.run(["sysctl", f"{name}={value}"], timeout=30).returncode == 0
+        line = f"{name}={value}"
+        conf = "/etc/sysctl.conf"
+        keep = sudo.run(["sh", "-c",
+                         f"touch {conf} && grep -v '^{name}=' {conf} > {conf}.new; "
+                         f"echo '{line}' >> {conf}.new && mv {conf}.new {conf}"],
+                        timeout=30).returncode == 0
+        return now and keep
 
     def kldload(self, sudo, *modules: str) -> bool:
         ok = True

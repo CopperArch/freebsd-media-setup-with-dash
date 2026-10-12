@@ -449,8 +449,31 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
         if not c.plat.jail_exists(vpn["jail"]):
             c.plat.jail_create(c.sudo, vpn["jail"], rel, vpn["ip"], st["bridge"],
                                vnet=True, gateway=bridge_gw)
-            c.plat.jail_pkg_install(c.sudo, vpn["jail"], vpn["pkg"])
+        # pf has to run inside this jail (see vpn/pf-vpn-jail.conf.tmpl),
+        # which Bastille's default securelevel forbids.
+        if c.plat.jail_set_securelevel(c.sudo, vpn["jail"], 1):
+            c.plat.jail_restart(c.sudo, vpn["jail"])
+        # Not only on creation: an earlier run that created the jail but
+        # could not download its packages must be finished by this one.
+        failed_pkgs = []
+        if c.plat.jail_pkgs_missing(c.sudo, vpn["jail"], vpn["pkg"]):
+            if not c.plat.jail_pkg_install(c.sudo, vpn["jail"], vpn["pkg"]):
+                failed_pkgs.append(vpn["jail"])
         c.plat.jail_enable_forwarding(c.sudo, vpn["jail"])
+        # The vpn jail's own firewall: NAT onto the tunnel + never forward
+        # the confined jails anywhere else. Loaded now and at every jail
+        # start (pf_enable), before the tunnel and before any confined jail
+        # is pointed at this one.
+        confined_ips = [cj["ip"] for cj in vpn["confined"]]
+        jail_root = f"/usr/local/bastille/jails/{vpn['jail']}/root"
+        render_file(c.repo / "vpn" / "pf-vpn-jail.conf.tmpl",
+                    Path(f"{jail_root}/etc/pf.conf"),
+                    dict(c.v, VPN_CONFINED_IPS=", ".join(confined_ips)), mode=0o644)
+        c.plat.jail_sysrc(c.sudo, vpn["jail"], "pf_enable=YES")
+        c.sudo.run(["bastille", "cmd", vpn["jail"], "pfctl", "-e"], timeout=30,
+                   quiet=True)
+        jail_pf_ok = c.sudo.run(["bastille", "cmd", vpn["jail"], "pfctl", "-f",
+                                 "/etc/pf.conf"], timeout=30).returncode == 0
         # render wg0.conf from the profile, into the vpn jail -- but only
         # actually start the tunnel if there's a real config to start. No
         # WireGuard credentials is a legitimate "configure this later" state
@@ -460,7 +483,6 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
         # than re-creating anything.
         have_wg = bool(c.profile.wg_private_key and c.profile.wg_peer_public_key
                        and c.profile.wg_endpoint)
-        jail_root = f"/usr/local/bastille/jails/{vpn['jail']}/root"
         wg_note = ""
         if have_wg:
             render_file(c.repo / "vpn" / "wg0.conf.tmpl",
@@ -493,9 +515,16 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
         # vpn jail's own IP once they're fully provisioned, so first-time
         # setup isn't starved of internet before the kill-switch below exists
         # to make that safe.
-        confined_ips = []
+        # Name servers for the confined jails. Bastille gives a new jail the
+        # host's resolv.conf, which usually names the home router -- an
+        # address that cannot be reached through a VPN tunnel, so nothing
+        # would resolve once the jail is routed through it. Use the VPN's
+        # own resolver, then two public ones that work through any tunnel.
+        resolvers = [d.strip() for d in str(c.profile.wg_dns or "").split(",")
+                     if d.strip() and have_wg]
+        resolvers += [r for r in ("1.1.1.1", "9.9.9.9") if r not in resolvers]
+        resolv_conf = "".join(f"nameserver {r}\n" for r in resolvers)
         for cj in vpn["confined"]:
-            confined_ips.append(cj["ip"])
             freshly_created = not c.plat.jail_exists(cj["name"])
             if freshly_created:
                 c.plat.jail_create(c.sudo, cj["name"], rel, cj["ip"], st["bridge"],
@@ -503,7 +532,17 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
                 if cj.get("allow_mlock"):
                     c.plat.jail_add_param(c.sudo, cj["name"], "allow.mlock", "1")
                     c.plat.jail_restart(c.sudo, cj["name"])
-                c.plat.jail_pkg_install(c.sudo, cj["name"], cj["pkg"])
+            if c.plat.jail_pkgs_missing(c.sudo, cj["name"], cj["pkg"]):
+                # A jail left without its packages by an earlier failed run
+                # is already routed through the vpn jail, which may have no
+                # tunnel yet. Send it out the bridge for the download, as a
+                # new jail is; the block below locks it down again.
+                if (not freshly_created and
+                        c.plat.jail_defaultrouter(c.sudo, cj["name"]) != bridge_gw):
+                    c.plat.jail_sysrc(c.sudo, cj["name"], f"defaultrouter={bridge_gw}")
+                    c.plat.jail_restart(c.sudo, cj["name"])
+                if not c.plat.jail_pkg_install(c.sudo, cj["name"], cj["pkg"]):
+                    failed_pkgs.append(cj["name"])
             for k, val in (cj.get("rc") or {}).items():
                 c.plat.jail_sysrc(c.sudo, cj["name"], f"{k}={val}")
             for m in (cj.get("mounts") or []):
@@ -519,6 +558,8 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
             # skipping the vpn jail entirely, until this restart was added).
             # Only skip the restart when the value is ALREADY correct, so a
             # plain re-run doesn't bounce an already-locked-down jail.
+            Path(f"/usr/local/bastille/jails/{cj['name']}/root/etc/resolv.conf"
+                 ).write_text(resolv_conf)
             if c.plat.jail_defaultrouter(c.sudo, cj["name"]) != vpn["ip"]:
                 c.plat.jail_sysrc(c.sudo, cj["name"], f"defaultrouter={vpn['ip']}")
                 c.plat.jail_restart(c.sudo, cj["name"])
@@ -526,20 +567,38 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
                 c.plat.jail_service(c.sudo, cj["name"], svc, "start")
             if cj["name"] == "qbittorrent":
                 _qbittorrent_skip_login(c, cj["name"])
-        # HOST-side kill-switch: append once (idempotent), covering every
-        # confined jail's IP, then reload. This is what actually enforces
-        # "no tunnel, no leak" now that jail-side pf is off the table.
+        # HOST-side kill-switch, the second layer. pf is only shown packets
+        # on a bridge member -- and packets addressed to the host itself,
+        # which is what a packet sent to the bridge gateway is -- when these
+        # two are on. With the defaults the rule loads, matches nothing, and
+        # a confined jail reaches the internet with the real address
+        # whenever the tunnel is down (measured on a clean install).
+        c.plat.sysctl_persist(c.sudo, "net.link.bridge.pfil_member", "1")
+        c.plat.sysctl_persist(c.sudo, "net.link.bridge.pfil_local_phys", "1")
+        # Always the last block of pf.conf; replaced when the rendered rule
+        # differs, so a rule written by an older version is corrected.
         pf_conf = Path("/etc/pf.conf")
-        marker = KILLSWITCH_MARKER
         text = pf_conf.read_text() if pf_conf.exists() else ""
-        if marker not in text:
-            snippet = render_text(
-                (c.repo / "vpn" / "pf-killswitch.conf.tmpl").read_text(),
-                dict(c.v, VPN_CONFINED_IPS=", ".join(confined_ips),
-                    VPN_JAIL_NAME=vpn["jail"], VPN_JAIL_IP=vpn["ip"]),
-                "pf-killswitch")
-            pf_conf.write_text(text.rstrip("\n") + f"\n\n{marker}\n{snippet}\n")
-            c.plat.pf_reload(c.sudo)
+        snippet = render_text(
+            (c.repo / "vpn" / "pf-killswitch.conf.tmpl").read_text(),
+            dict(c.v, VPN_CONFINED_IPS=", ".join(confined_ips),
+                 VPN_JAIL_NAME=vpn["jail"], VPN_JAIL_IP=vpn["ip"]),
+            "pf-killswitch")
+        base = text[:text.index(KILLSWITCH_MARKER)] if KILLSWITCH_MARKER in text else text
+        wanted = base.rstrip("\n") + f"\n\n{KILLSWITCH_MARKER}\n{snippet}\n"
+        if wanted != text:
+            pf_conf.write_text(wanted)
+        host_pf_ok = c.plat.pf_reload(c.sudo)
+        if not (jail_pf_ok and host_pf_ok):
+            return False, ("KILL-SWITCH NOT LOADED ("
+                           + ("" if jail_pf_ok else "vpn jail pf ")
+                           + ("" if host_pf_ok else "host pf ")
+                           + "failed) -- the download jails are not protected; "
+                           "see the pfctl output above")
+        if failed_pkgs:
+            return False, ("package install FAILED in: " + ", ".join(failed_pkgs)
+                           + " -- check the network and run the installer again"
+                           + wg_note)
         return True, f"vpn + confined: {confined}{wg_note}"
     return _exec(ctx, "create vpn stack", do)
 
@@ -558,15 +617,22 @@ def _qbittorrent_skip_login(c: Ctx, name: str) -> None:
     seed it before the service has ever run."""
     conf = Path(f"/usr/local/bastille/jails/{name}/root/var/db/qbittorrent"
                "/conf/qBittorrent/config/qBittorrent.conf")
-    for _ in range(10):
+    import time
+    for _ in range(45):
         if conf.exists():
             break
-        import time; time.sleep(1)
+        time.sleep(1)
     if not conf.exists():
         return
-    text = conf.read_text()
-    if "AuthSubnetWhitelistEnabled" in text:
+    if "AuthSubnetWhitelistEnabled" in conf.read_text():
         return
+    # Stopped while it is edited: qBittorrent writes its in-memory settings
+    # back over this file when it exits, so a change made under a running
+    # daemon is lost by the very restart meant to apply it (measured on a
+    # clean install: the whitelist was never there afterwards).
+    c.plat.jail_service(c.sudo, name, "qbittorrent", "stop")
+    time.sleep(2)
+    text = conf.read_text()
     subnets = f"{c.v['SUBNET']}.0/24, {c.profile.lan_cidr}"
     block = ("[Preferences]\n"
             "WebUI\\AuthSubnetWhitelistEnabled=true\n"
@@ -576,7 +642,7 @@ def _qbittorrent_skip_login(c: Ctx, name: str) -> None:
     else:
         text = text.rstrip("\n") + "\n\n" + block
     conf.write_text(text)
-    c.plat.jail_service(c.sudo, name, "qbittorrent", "restart")
+    c.plat.jail_service(c.sudo, name, "qbittorrent", "start")
 
 
 # ── 4b. public access: Caddy reverse-proxy + dynamic DNS / Cloudflare Tunnel ──
@@ -956,6 +1022,17 @@ def install_dashboard(ctx: Ctx, accept) -> tuple[bool, str]:
         server_ok = c.plat.crontab_user(
             c.sudo, [f"* * * * * {launch}  # status-dashboard server watchdog"],
             "root", tag="dashboard-watchdog")
+        # The collector runs as root as well: everything it reports about a
+        # jail (service health, versions, the VPN's exit address) comes from
+        # `bastille cmd`, which only root may run. DASHBOARD_HOME points it
+        # at this user's data directory, as for the server.
+        collect = (f"env DASHBOARD_HOME={home} python3.11 "
+                   f"{bin_dir}/status-collect.py")
+        c.plat.crontab_user(
+            c.sudo, [f"* * * * * {collect} >/dev/null 2>&1  # status-dashboard collector"],
+            "root", tag="dashboard-collector")
+        c.sudo.run(["sh", "-c", f"({collect}) < /dev/null > /dev/null 2>&1 &"],
+                   timeout=30)
         # Backgrounded and fully redirected, not just piped through -o: this
         # call goes through Python's own capturing subprocess.run(), and
         # daemon(8) doesn't always finish detaching from the invoking shell

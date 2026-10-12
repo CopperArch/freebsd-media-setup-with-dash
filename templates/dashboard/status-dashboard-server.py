@@ -467,6 +467,20 @@ def set_vpn_config(raw_text, name=""):
     except OSError:
         pass
 
+    # The confined jails resolve names through the tunnel: the new VPN's own
+    # resolver first, then two public ones that work through any tunnel (the
+    # home router's address, which a new jail starts with, does not).
+    resolvers = [d.strip() for d in dns.split(",")
+                 if re.fullmatch(r"[0-9A-Fa-f:.]{3,45}", d.strip())]
+    resolvers += [r for r in ("1.1.1.1", "9.9.9.9") if r not in resolvers]
+    for member in GROUP_MEMBERS:
+        rc_file = Path(f"/usr/local/bastille/jails/{member}/root/etc/resolv.conf")
+        if rc_file.parent.is_dir():
+            try:
+                rc_file.write_text("".join(f"nameserver {r}\n" for r in resolvers))
+            except OSError:
+                pass
+
     sh(["bastille", "sysrc", _GROUP_HUB, "wireguard_enable=YES",
        "wireguard_interfaces=wg0"], timeout=30)
     ok, out = _restart_tunnel(_GROUP_HUB)
