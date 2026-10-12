@@ -449,7 +449,12 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
         if not c.plat.jail_exists(vpn["jail"]):
             c.plat.jail_create(c.sudo, vpn["jail"], rel, vpn["ip"], st["bridge"],
                                vnet=True, gateway=bridge_gw)
-            c.plat.jail_pkg_install(c.sudo, vpn["jail"], vpn["pkg"])
+        # Not only on creation: an earlier run that created the jail but
+        # could not download its packages must be finished by this one.
+        failed_pkgs = []
+        if c.plat.jail_pkgs_missing(c.sudo, vpn["jail"], vpn["pkg"]):
+            if not c.plat.jail_pkg_install(c.sudo, vpn["jail"], vpn["pkg"]):
+                failed_pkgs.append(vpn["jail"])
         c.plat.jail_enable_forwarding(c.sudo, vpn["jail"])
         # render wg0.conf from the profile, into the vpn jail -- but only
         # actually start the tunnel if there's a real config to start. No
@@ -503,7 +508,17 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
                 if cj.get("allow_mlock"):
                     c.plat.jail_add_param(c.sudo, cj["name"], "allow.mlock", "1")
                     c.plat.jail_restart(c.sudo, cj["name"])
-                c.plat.jail_pkg_install(c.sudo, cj["name"], cj["pkg"])
+            if c.plat.jail_pkgs_missing(c.sudo, cj["name"], cj["pkg"]):
+                # A jail left without its packages by an earlier failed run
+                # is already routed through the vpn jail, which may have no
+                # tunnel yet. Send it out the bridge for the download, as a
+                # new jail is; the block below locks it down again.
+                if (not freshly_created and
+                        c.plat.jail_defaultrouter(c.sudo, cj["name"]) != bridge_gw):
+                    c.plat.jail_sysrc(c.sudo, cj["name"], f"defaultrouter={bridge_gw}")
+                    c.plat.jail_restart(c.sudo, cj["name"])
+                if not c.plat.jail_pkg_install(c.sudo, cj["name"], cj["pkg"]):
+                    failed_pkgs.append(cj["name"])
             for k, val in (cj.get("rc") or {}).items():
                 c.plat.jail_sysrc(c.sudo, cj["name"], f"{k}={val}")
             for m in (cj.get("mounts") or []):
@@ -540,6 +555,10 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
                 "pf-killswitch")
             pf_conf.write_text(text.rstrip("\n") + f"\n\n{marker}\n{snippet}\n")
             c.plat.pf_reload(c.sudo)
+        if failed_pkgs:
+            return False, ("package install FAILED in: " + ", ".join(failed_pkgs)
+                           + " -- check the network and run the installer again"
+                           + wg_note)
         return True, f"vpn + confined: {confined}{wg_note}"
     return _exec(ctx, "create vpn stack", do)
 
