@@ -544,6 +544,13 @@ def create_vpn_stack(ctx: Ctx, accept) -> tuple[bool, str]:
         # HOST-side kill-switch: append once (idempotent), covering every
         # confined jail's IP, then reload. This is what actually enforces
         # "no tunnel, no leak" now that jail-side pf is off the table.
+        # The kill-switch rule names the vpn jail's own leg of the bridge
+        # (e0a_<jail>). pf is only shown packets on a bridge MEMBER when
+        # this is on; with the default of 0 the rule loads, matches nothing,
+        # and a confined jail reaches the internet with the real address
+        # whenever the tunnel is down. Measured on a clean install: 0
+        # packets matched and a successful fetch before, blocked after.
+        c.plat.sysctl_persist(c.sudo, "net.link.bridge.pfil_member", "1")
         pf_conf = Path("/etc/pf.conf")
         marker = KILLSWITCH_MARKER
         text = pf_conf.read_text() if pf_conf.exists() else ""

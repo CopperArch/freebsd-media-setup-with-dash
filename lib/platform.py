@@ -324,6 +324,17 @@ class Platform:
         sudo.run(["sysctl", "net.inet.ip.forwarding=1"], timeout=30)
         return ok
 
+    def sysctl_persist(self, sudo, name: str, value: str) -> bool:
+        """Set a sysctl now and on every boot (/etc/sysctl.conf)."""
+        now = sudo.run(["sysctl", f"{name}={value}"], timeout=30).returncode == 0
+        line = f"{name}={value}"
+        conf = "/etc/sysctl.conf"
+        keep = sudo.run(["sh", "-c",
+                         f"touch {conf} && grep -v '^{name}=' {conf} > {conf}.new; "
+                         f"echo '{line}' >> {conf}.new && mv {conf}.new {conf}"],
+                        timeout=30).returncode == 0
+        return now and keep
+
     def kldload(self, sudo, *modules: str) -> bool:
         ok = True
         for m in modules:

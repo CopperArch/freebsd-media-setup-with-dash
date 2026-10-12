@@ -32,4 +32,6 @@
 # confirmed live this rule needs NO "in"/"out" direction qualifier (adding
 # one broke the match entirely against this address-family/list syntax).
 
+# Needs net.link.bridge.pfil_member=1 (set by the installer's VPN step):
+# without it pf never sees packets on a bridge member and this matches nothing.
 block drop quick on e0a_{{VPN_JAIL_NAME}} from { {{VPN_CONFINED_IPS}} } to ! {{VPN_JAIL_IP}}
