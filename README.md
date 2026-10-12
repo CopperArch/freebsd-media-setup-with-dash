@@ -112,6 +112,20 @@ to the host WAN IP) rather than trusting a wrapper healthcheck — the same
 lesson the Linux edition learned when gluetun reported "healthy" while OpenVPN
 looped on auth.
 
+### Any provider, or your own server
+
+The tunnel is plain WireGuard, so it takes a config from **any** provider that
+offers one (Proton VPN, Windscribe, Surfshark, Mullvad, IVPN, …) and equally a
+**WireGuard server you run yourself** — fill in `wg_private_key`,
+`wg_peer_public_key`, `wg_endpoint` (and `wg_preshared_key` if your server uses
+one) in the profile, or answer the installer's prompts. To switch later, click
+**Change VPN provider** on the dashboard and paste the whole `.conf` file.
+
+The dashboard's VPN card names the VPN that is active. Set `vpn_provider` in
+the profile (or type a name in the Change VPN provider dialog) to choose the
+label — "Home server", say; left blank it is recognised from the endpoint, or
+shown as "Custom VPN".
+
 ## Self-healing (three layers, ported)
 
 1. **rc.d** — services run under `service`/`sysrc`; jails restart on boot.
@@ -127,7 +141,10 @@ looped on auth.
    snapshot with **verify + auto-rollback**, host `pkg` + `freebsd-update`, and
    log pruning. It also moves TV episodes that landed in the movies folder
    (and movies in the TV folder) to the right library
-   (`media-library-sort.py`), and `media-library-health.py` keeps a Jellyfin
+   (`media-library-sort.py`), removes duplicate movies/episodes keeping the
+   best copy (`jellyfin-duplicates.py` — **deletes files**, so it stays off
+   until you create a Jellyfin API key in `~/.dbmedia/jellyfin-api-key`; run
+   it without `--apply` to preview), and `media-library-health.py` keeps a Jellyfin
    collection for every movie franchise with 2+ films (unidentified movies
    are matched only when TMDB and an independent IMDb search agree), keeps
    Plex's automatic collections on, applies hand-made groupings from

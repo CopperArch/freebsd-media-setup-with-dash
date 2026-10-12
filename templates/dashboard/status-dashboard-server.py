@@ -373,7 +373,30 @@ def _parse_wg_conf(text):
     return fields
 
 
-def set_vpn_config(raw_text):
+# Endpoint host -> provider name, for labelling the VPN on the dashboard when
+# no name was given. Anything else is somebody's own server.
+VPN_HOST_NAMES = (
+    ("protonvpn", "Proton VPN"), ("windscribe", "Windscribe"),
+    ("whiskergalaxy", "Windscribe"), ("surfshark", "Surfshark"),
+    ("mullvad", "Mullvad"), ("nordvpn", "NordVPN"), ("ivpn", "IVPN"),
+    ("privateinternetaccess", "Private Internet Access"), ("airvpn", "AirVPN"),
+    ("torguard", "TorGuard"), ("expressvpn", "ExpressVPN"),
+)
+
+
+def vpn_label(name, endpoint):
+    """Name shown for the active VPN: the one given, else guessed from the
+    endpoint, else 'Custom VPN' (your own server or an unlisted provider)."""
+    if (name or "").strip():
+        return name.strip()[:40]
+    host = (endpoint or "").rsplit(":", 1)[0].lower()
+    for needle, label in VPN_HOST_NAMES:
+        if needle in host:
+            return label
+    return "Custom VPN" if host else ""
+
+
+def set_vpn_config(raw_text, name=""):
     """Paste-a-whole-.conf VPN provider switch, for the dashboard's "Change
     VPN provider" button. Parses what a WireGuard config from any real
     provider (ProtonVPN, Windscribe, Surfshark, ...) actually looks like --
@@ -400,6 +423,11 @@ def set_vpn_config(raw_text):
     dns = fields.get("dns", "10.2.0.1")
     allowed_ips = fields.get("allowedips", "0.0.0.0/0, ::/0")
     keepalive = fields.get("persistentkeepalive", "25")
+    # Self-hosted servers often add a pre-shared key; dropping it would leave
+    # a tunnel that never completes its handshake.
+    psk = fields.get("presharedkey", "")
+    if psk and not _WG_KEY_RE.match(psk):
+        return False, "PresharedKey doesn't look like a WireGuard key"
 
     conf_path = Path(f"/usr/local/bastille/jails/{_GROUP_HUB}/root"
                      "/usr/local/etc/wireguard/wg0.conf")
@@ -421,6 +449,7 @@ def set_vpn_config(raw_text):
         "MTU = 1420\n\n"
         "[Peer]\n"
         f"PublicKey = {public_key}\n"
+        + (f"PresharedKey = {psk}\n" if psk else "") +
         f"Endpoint = {endpoint}\n"
         f"AllowedIPs = {allowed_ips}\n"
         f"PersistentKeepalive = {keepalive}\n"
@@ -429,6 +458,14 @@ def set_vpn_config(raw_text):
         conf_path.with_name("wg0.conf.bak").write_text(conf_path.read_text())
     conf_path.write_text(new_conf)
     conf_path.chmod(0o600)
+    # What the dashboard's VPN card calls it from now on.
+    label = vpn_label(name if isinstance(name, str) else "", endpoint)
+    try:
+        name_file = _HOME / ".config/status-dashboard/vpn-name"
+        name_file.write_text(label + "\n")
+        name_file.chmod(0o644)
+    except OSError:
+        pass
 
     sh(["bastille", "sysrc", _GROUP_HUB, "wireguard_enable=YES",
        "wireguard_interfaces=wg0"], timeout=30)
@@ -883,7 +920,7 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(200 if ok else 400, {"ok": ok, "output": msg})
 
         if route == "/api/vpn-config":
-            ok, msg = set_vpn_config(body.get("config", ""))
+            ok, msg = set_vpn_config(body.get("config", ""), body.get("name", ""))
             return self._json(200 if ok else 400, {"ok": ok, "output": msg})
 
         if route == "/api/schedule":

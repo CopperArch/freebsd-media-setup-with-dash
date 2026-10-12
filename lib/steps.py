@@ -856,6 +856,12 @@ def install_dashboard(ctx: Ctx, accept) -> tuple[bool, str]:
                 f"QBIT_USER={c.profile.qbit_user}\nQBIT_PASS={c.profile.qbit_password}\n"
                 "RADARR_KEY=\nSONARR_KEY=\nPROWLARR_KEY=\nJELLYFIN_KEY=\n")
             keys.chmod(0o600)
+        # Name of the active VPN for the dashboard's VPN card (the Change
+        # VPN provider dialog rewrites it when the config is replaced).
+        from .profile import vpn_label
+        label = vpn_label(c.profile.vpn_provider, c.profile.wg_endpoint)
+        if label:
+            (conf / "vpn-name").write_text(label + "\n")
         grp = conf / "vpn-group.json"
         if not grp.exists():
             grp.write_text('{"hub": "vpn", '
