@@ -27,8 +27,15 @@ QUICK=false
 [ "${1:-}" = "--quick" ] && QUICK=true
 
 # Managed jails (kept in sync with stack.yaml). VPN-routed ones listed too.
-MEDIA_JAILS="jellyfin plex prowlarr bazarr seerr caddy nextcloud nextcloud-db"
-VPN_JAILS="vpn qbittorrent sonarr radarr"
+# Only the ones that exist here: a stack the profile left off (VPN, Nextcloud)
+# has no jails, and "never installed" must not be reported as "down".
+installed_jails() {
+    for _j in "$@"; do
+        [ -d "/usr/local/bastille/jails/$_j" ] && printf '%s ' "$_j"
+    done
+}
+MEDIA_JAILS=$(installed_jails jellyfin plex prowlarr bazarr seerr caddy nextcloud nextcloud-db)
+VPN_JAILS=$(installed_jails vpn qbittorrent sonarr radarr)
 ALL_JAILS="$MEDIA_JAILS $VPN_JAILS"
 
 banner "Daily Routine started (quick=$QUICK) on $(hostname)"
@@ -37,7 +44,11 @@ banner "Daily Routine started (quick=$QUICK) on $(hostname)"
 banner "Host System Health Check"
 
 # rc.d services that must be up for the stack to function.
-for svc in bastille pf sddm; do
+# Only services this machine has switched on (a box without a desktop has no
+# sddm). bastille is not listed: its rc script starts the jails and exits, so
+# "not running" is its normal state -- the jails are checked one by one below.
+for svc in pf sddm; do
+    service "$svc" enabled >/dev/null 2>&1 || continue
     if service "$svc" status >/dev/null 2>&1; then
         log "  [OK]   rc service '$svc' is running"
     else
@@ -63,12 +74,13 @@ if command -v smartctl >/dev/null 2>&1; then
     for dev in $(sysctl -n kern.disks 2>/dev/null); do
         case "$dev" in cd*|md*|fd*) continue ;; esac
         out=$(smartctl -H "/dev/$dev" 2>&1)
-        if echo "$out" | grep -qi "PASSED\|OK"; then
+        if echo "$out" | grep -qi "FAILED\|FAILING"; then
+            warn "  [WARN] SMART /dev/$dev: $(echo "$out" | grep -i 'health\|fail' | head -1)"
+        elif echo "$out" | grep -qi "PASSED\|: OK"; then
             log "  [OK]   SMART /dev/$dev: healthy"
-        elif echo "$out" | grep -qi "Unavailable\|Unsupported"; then
-            log "  [SKIP] SMART /dev/$dev: no passthrough (USB bridge?)"
         else
-            warn "  [WARN] SMART /dev/$dev: $(echo "$out" | grep -i health)"
+            # a virtual disk or a USB bridge: nothing to read, not a fault
+            log "  [SKIP] SMART /dev/$dev: no SMART data from this device"
         fi
     done
 fi
@@ -189,24 +201,41 @@ fi
 
 # ─── 2. VPN tunnel health + rotation (replaces gluetun healthcheck) ─────────
 banner "VPN Tunnel Health"
-# Trust the tunnel, not the wrapper: check the exit IP from INSIDE the vpn jail
-# and confirm it differs from the host's real WAN IP. gluetun's healthcheck
-# used to stay "healthy" while OpenVPN looped on auth — we check reality.
-vpn_exit_ip() { bastille cmd vpn sh -c 'fetch -qo - https://api.ipify.org 2>/dev/null'; }
-host_wan_ip() { fetch -qo - https://api.ipify.org 2>/dev/null; }
+# Healthy = WireGuard has completed a handshake in the last three minutes
+# (peers re-handshake every two while PersistentKeepalive keeps traffic
+# flowing). The kill-switch leaves the confined jails no other way out, so a
+# live tunnel is the whole question. An earlier version compared the exit
+# address with this machine's own, which restarted a self-hosted VPN on the
+# same connection three times an hour for nothing.
+WG_CONF=/usr/local/bastille/jails/vpn/root/usr/local/etc/wireguard/wg0.conf
+handshake_age() {
+    _hs=$(bastille cmd vpn wg show wg0 latest-handshakes 2>/dev/null | awk '$2 ~ /^[0-9]+$/ && $2 > m {m = $2} END {print m + 0}')
+    [ "${_hs:-0}" -gt 0 ] && echo $(( $(date +%s) - _hs )) || echo 999999
+}
+vpn_exit_ip() { bastille cmd vpn sh -c 'fetch -T 10 -qo - https://api.ipify.org 2>/dev/null'; }
 
 TUN_OK=false
+if [ ! -d /usr/local/bastille/jails/vpn ]; then
+    log "  [SKIP] no VPN stack on this machine"
+    TUN_OK=true
+elif [ ! -f "$WG_CONF" ]; then
+    log "  [SKIP] the VPN has no WireGuard config yet (dashboard: VPN -> Change provider); the kill-switch keeps the download jails offline until it does"
+    TUN_OK=true
+else
 for attempt in 1 2 3; do
-    vip=$(vpn_exit_ip); hip=$(host_wan_ip)
-    if [ -n "$vip" ] && [ "$vip" != "$hip" ]; then
-        log "  [OK]   VPN exit IP $vip differs from host WAN $hip (attempt $attempt)"
+    age=$(handshake_age)
+    if [ "$age" -lt 180 ]; then
+        log "  [OK]   VPN tunnel up: handshake ${age}s ago, exit IP $(vpn_exit_ip) (attempt $attempt)"
         TUN_OK=true
         break
     fi
-    warn "  [WARN] tunnel down or leaking (vpn='$vip' host='$hip'), restart $attempt/3"
-    bastille cmd vpn service wireguard restart >/dev/null 2>&1
-    sleep 8
+    warn "  [WARN] VPN tunnel has no recent handshake, restart $attempt/3"
+    # backgrounded: wg-quick leaves a route monitor running that would
+    # otherwise hold this command open
+    (bastille cmd vpn service wireguard restart) </dev/null >/dev/null 2>&1 &
+    sleep 12
 done
+fi
 if [ "$TUN_OK" != true ]; then
     warn "  [FAIL] VPN tunnel would not come back after 3 restarts"
     [ -x "$ROOT/.dbmedia/scripts/send-alert.py" ] && \
