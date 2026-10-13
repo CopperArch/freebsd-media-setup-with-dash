@@ -162,6 +162,14 @@ class Platform:
         # instead of just warning, which silently made this always return
         # False (every idempotency check in the installer relies on this,
         # so a re-run would try to recreate every jail from scratch).
+        #
+        # The jail's own directory is checked first: `bastille list` builds
+        # its answer in fixed /tmp/bastille-list-<jail> files, so it comes
+        # back EMPTY (exit 0) whenever another bastille command is running --
+        # the dashboard collector, a repair, the nightly routine. That made
+        # a re-run decide existing jails were missing, at random.
+        if Path(f"/usr/local/bastille/jails/{name}/jail.conf").is_file():
+            return True
         p = run(["bastille", "list", "all"], quiet=True)
         return p.returncode == 0 and any(
             line.split() and line.split()[-1] == name or f" {name} " in f" {line} "

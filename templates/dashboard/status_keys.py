@@ -16,7 +16,7 @@ from pathlib import Path
 # but its data still lives under that user's actual home directory, not
 # /root. status-collect.py runs as root too (from root's crontab and from the
 # server's Refresh): everything it reports about a jail comes from
-# `bastille cmd`, which only root may run. Both get DASHBOARD_HOME; a script
+# `jexec`, which only root may run. Both get DASHBOARD_HOME; a script
 # started by hand as the desktop user falls back to its own home.
 _HOME = Path(os.environ["DASHBOARD_HOME"]) if "DASHBOARD_HOME" in os.environ else Path.home()
 HOME_DIR = _HOME

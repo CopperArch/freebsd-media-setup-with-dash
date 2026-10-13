@@ -3,7 +3,7 @@
 # desktop status dashboard. Safe to run on every boot / from daily-routine.sh.
 #
 # FreeBSD has no systemd user units, so the three roles map to:
-#   collector (every 60s)  -> a cron line (1-minute granularity == 60s)
+#   collector (every 10s)  -> root cron line added by the installer (lib/steps.py)
 #   HTTP server (always)   -> daemon(8) -r supervision + a ROOT cron watchdog
 #                             line -- NOT this script's crontab. The repair
 #                             API restarts jails, upgrades packages and

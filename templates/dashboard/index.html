@@ -663,7 +663,8 @@ const $ = id => document.getElementById(id);
   }).catch(()=>{});
   loadPanes();
 
-  // No program boots on page load: the iframe stays blank until a pane is
+  // With the dock open the page boots the remembered pane itself (below).
+  // With it closed nothing boots on load: the iframe stays blank until a pane is
   // picked (or the dock is opened with a width button).
 
   btn.onclick = e => { e.stopPropagation(); menu.classList.toggle("on");
@@ -731,6 +732,9 @@ const $ = id => document.getElementById(id);
   });
   addEventListener("resize", () => apply(w, false));
   apply(w, false);
+  // The dock was left open: start its pane now. Otherwise a reloaded page
+  // shows an empty dock until the width is changed away and back.
+  if(w > 0) openPane(pane, null, null, false);
 })();
 
 /* ── reboot ─────────────────────────────────────────────────────────────
@@ -797,7 +801,7 @@ Reconnecting takes roughly a minute.</pre>
 })();
 /* ── manual refresh ───────────────────────────────────────────────────
    /api/refresh re-runs the collector immediately instead of waiting for
-   the next 60s timer tick. */
+   the next 10s collection. */
 (() => {
   const btn = $("refreshbtn");
   if(!btn) return;
@@ -1178,7 +1182,7 @@ function renderThermal(d){
 
 // Healthy (green-dot) jails: click the DOT to swap the tile's status text for
 // the installed version, click it again to swap back (the rest of the tile
-// still opens the app). Kept in a set so it survives the 60s re-render.
+// still opens the app). Kept in a set so it survives each re-render.
 const _verShown = new Set();
 let _lastStatus = null;
 function renderDocker(d){
@@ -1376,7 +1380,12 @@ async function tick(){
     const res = await fetch("status.json?_="+Date.now(), {cache:"no-store"});
     if(!res.ok) throw new Error("HTTP "+res.status);
     const d = await res.json();
+    // Same collection as last time: leave the page alone, so a click or a
+    // scroll is not interrupted by redrawing identical data.
+    if(_lastStatus && d.generated_epoch === lastGen){ stampAge(); return; }
     lastGen = d.generated_epoch||0;
+    _lastStatus = d;
+    mergeLive(d);
 
     const h=d.host||{};
     $("hostinfo").textContent = h.os||"";
@@ -1399,10 +1408,37 @@ function stampAge(){
     ? `<span class="stale">data ${s} — collector may be stopped</span>`
     : `<span class="muted">updated ${s}</span>`;
 }
+// Host gauges (CPU, memory, swap, load, temperatures, disks) come from the
+// server every 2 s; status.json only changes every 10 s.
+let _liveData = null;
+function mergeLive(d){
+  if(!_liveData || !d || (d.host||{}).error) return;
+  const lh = _liveData.host||{}, h = d.host = d.host||{};
+  h.cpu = Object.assign({}, h.cpu, lh.cpu);     // keeps the model name
+  for(const k of ["memory","load","sensors","uptime_seconds"])
+    if(lh[k] !== undefined) h[k] = lh[k];
+  if(_liveData.disks && _liveData.disks.filesystems) d.disks = _liveData.disks;
+}
+async function liveTick(){
+  try{
+    const res = await fetch("api/live?_="+Date.now(), {cache:"no-store"});
+    if(!res.ok) return;
+    _liveData = await res.json();
+    if(!_lastStatus) return;
+    mergeLive(_lastStatus);
+    const h = _lastStatus.host||{};
+    if(h.uptime_seconds!=null) $("uptime").textContent = `up ${dur(h.uptime_seconds)}`;
+    const sc = scrollSave();
+    renderHost(_lastStatus); renderThermal(_lastStatus); renderDisks(_lastStatus);
+    scrollRestore(sc);
+  }catch(e){ /* keep the last numbers; tick() reports a dead server */ }
+}
 tick();
+liveTick();
 // Skip polling while the window is fully occluded — nothing observes the
-// result, and the collector's 60s timer keeps the data current anyway.
-setInterval(() => { if(!document.hidden) tick(); }, 30000);
+// result, and the collector's 10s loop keeps the data current anyway.
+setInterval(() => { if(!document.hidden) tick(); }, 2000);
+setInterval(() => { if(!document.hidden) liveTick(); }, 2000);
 setInterval(() => { if(!document.hidden) stampAge(); }, 5000);
 // Catch up the moment the window becomes visible again.
 document.addEventListener("visibilitychange", () => { if(!document.hidden) tick(); });

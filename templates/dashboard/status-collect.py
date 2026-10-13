@@ -9,13 +9,13 @@ schema's "docker" key -- see collect_docker() below).
 Retargeted sources vs. the Linux edition:
   /proc/*            -> sysctl (kern.cp_time(s), vm.stats, kern.boottime, hw.*)
   lm-sensors         -> sysctl dev.cpu.N.temperature / hw.acpi.thermal
-  docker ps/inspect  -> jls + bastille list/cmd (state, per-service health)
+  docker ps/inspect  -> jls + jexec (state, per-service health)
   gluetun logs       -> wg handshake + exit-IP probe from inside the vpn jail
   df --output/-B1    -> df -k (portable) x1024
   systemctl --failed -> rc services enabled-but-not-running
   apt -s upgrade     -> pkg upgrade -n  (+ pkg audit for the "security" count)
 
-Run every 60s from the status-collect rc/cron job.
+Run from cron, which starts a one-minute `--loop 60 10` (every 10 s).
 """
 from __future__ import annotations
 
@@ -177,46 +177,57 @@ def human(n, unit=1024):
 
 
 def jexec(jail, argv, timeout=15):
-    """Run a command INSIDE a jail (the docker-exec replacement)."""
-    return run(["bastille", "cmd", jail] + argv, timeout=timeout)
+    """Run a command INSIDE a jail (the docker-exec replacement).
+
+    jexec directly, the way `bastille cmd` does underneath, and not through
+    bastille: every bastille command builds its jail list in fixed
+    /tmp/bastille-list-<jail> files, so two running at once wipe each
+    other's list. This collector runs every 10 s, and going through bastille
+    made `bastille list` come back empty for anything else on the machine
+    (the installer then tried to create jails that already existed)."""
+    return run(["jexec", "-l", "-U", "root", jail] + argv, timeout=timeout)
 
 
 # ── host ─────────────────────────────────────────────────────────────────────
-def cpu_sample():
-    """Busy% total + per-core from kern.cp_time / kern.cp_times.
-    FreeBSD cp_time columns: user nice sys intr idle."""
-    def agg():
-        vals = [int(x) for x in sysctl("kern.cp_time").split()]
-        if len(vals) < 5:
-            return None
-        return sum(vals), vals[4]  # total, idle
+def cpu_read():
+    """Raw (total, idle) ticks: the aggregate, then one pair per core, from
+    kern.cp_time / kern.cp_times. Columns: user nice sys intr idle."""
+    vals = [int(x) for x in sysctl("kern.cp_time").split()]
+    agg = (sum(vals), vals[4]) if len(vals) >= 5 else None
+    raw = [int(x) for x in sysctl("kern.cp_times").split()]
+    cores = []
+    for i in range(0, len(raw) - 4, 5):
+        c = raw[i:i + 5]
+        cores.append((sum(c), c[4]))
+    return agg, cores
 
-    def per_core():
-        raw = [int(x) for x in sysctl("kern.cp_times").split()]
-        cores = []
-        for i in range(0, len(raw) - 4, 5):
-            c = raw[i:i + 5]
-            cores.append((sum(c), c[4]))
-        return cores
 
-    a_t, a_c = agg(), per_core()
-    time.sleep(0.4)
-    b_t, b_c = agg(), per_core()
-
-    def busy(a, b):
-        dt = b[0] - a[0]; di = b[1] - a[1]
+def cpu_usage(a, b):
+    """Busy% total + per-core between two cpu_read() samples."""
+    def busy(x, y):
+        dt = y[0] - x[0]; di = y[1] - x[1]
         return round(100.0 * (dt - di) / dt, 1) if dt > 0 else 0.0
 
+    (a_t, a_c), (b_t, b_c) = a, b
     total = busy(a_t, b_t) if a_t and b_t else 0.0
     cores = [busy(a_c[i], b_c[i]) for i in range(min(len(a_c), len(b_c)))]
     return {"total": total, "cores": cores}
+
+
+def cpu_sample():
+    """Busy% total + per-core over a short sampling window."""
+    a = cpu_read()
+    time.sleep(0.4)
+    return cpu_usage(a, cpu_read())
 
 
 def collect_sensors():
     """Temps from sysctl (coretemp/amdtemp expose dev.cpu.N.temperature;
     ACPI exposes hw.acpi.thermal.tzN.temperature). Values are like '54.0C'."""
     temps, fans = [], []
-    raw = run(["sysctl", "-a"], timeout=10)
+    # Only the two subtrees that hold temperatures: this runs every 2 s for
+    # the live gauges, and `sysctl -a` walks thousands of values.
+    raw = run(["sysctl", "dev.cpu", "hw.acpi.thermal"], timeout=10)
     for line in raw.splitlines():
         m = re.match(r"(dev\.cpu\.(\d+)\.temperature|hw\.acpi\.thermal\.tz\d+\.temperature):\s*([\d.]+)C", line)
         if m:
@@ -226,16 +237,51 @@ def collect_sensors():
     return {"temps": temps, "fans": fans}
 
 
-def collect_host():
-    pagesize = int(sysctl("hw.pagesize", "4096"))
-    total = int(sysctl("hw.physmem", "0"))
-    free = int(sysctl("vm.stats.vm.v_free_count", "0")) * pagesize
-    inactive = int(sysctl("vm.stats.vm.v_inactive_count", "0")) * pagesize
-    cache = int(sysctl("vm.stats.vm.v_cache_count", "0")) * pagesize
-    wired = int(sysctl("vm.stats.vm.v_wire_count", "0")) * pagesize
-    avail = free + inactive + cache
-    used = total - avail
+# Readings that change with a package upgrade or a reboot, not from one
+# minute to the next. Kept for the life of the process, so the 10 s loop
+# (see main) asks for each once a minute, as the once-a-minute collector did.
+_SLOW = {}
 
+
+def slow(key, fn):
+    if key not in _SLOW:
+        _SLOW[key] = fn()
+    return _SLOW[key]
+
+
+def collect_memory():
+    names = ["hw.pagesize", "hw.physmem", "vm.stats.vm.v_free_count",
+             "vm.stats.vm.v_inactive_count", "vm.stats.vm.v_cache_count",
+             "vm.stats.vm.v_wire_count"]
+    vals = run(["sysctl", "-n"] + names, timeout=6).split()
+    if len(vals) != len(names):
+        vals = ["4096", "0", "0", "0", "0", "0"]
+    pagesize, total, free, inactive, cache, wired = (int(v) for v in vals)
+    # ZFS keeps its disk cache (the ARC) in wired memory and hands it back
+    # when programs need it, down to a floor of c_min. Counting it as used
+    # shows a healthy ZFS machine as permanently ~90% full; Linux's page
+    # cache, the same thing, is counted as available there too.
+    arc = run(["sysctl", "-n", "kstat.zfs.misc.arcstats.size",
+               "kstat.zfs.misc.arcstats.c_min"], timeout=6).split()
+    arc_free = max(0, int(arc[0]) - int(arc[1])) if len(arc) == 2 else 0
+    avail = min(total, (free + inactive + cache) * pagesize + arc_free)
+    used = total - avail
+    # swapinfo -k: Device 1K-blocks Used Avail Capacity (one row per device)
+    swap_total = swap_used = 0
+    for line in run(["swapinfo", "-k"], timeout=6).splitlines()[1:]:
+        f = line.split()
+        if len(f) >= 3 and f[0] != "Total" and f[1].isdigit() and f[2].isdigit():
+            swap_total += int(f[1]) * 1024
+            swap_used += int(f[2]) * 1024
+    return {
+        "total": total, "used": used, "available": avail,
+        "cached": cache * pagesize + arc_free, "buffers": wired * pagesize,
+        "percent": round(100.0 * used / total, 1) if total else 0,
+        "swap_total": swap_total, "swap_used": swap_used,
+    }
+
+
+def collect_host():
     # boottime -> uptime
     bt = sysctl("kern.boottime")
     m = re.search(r"sec = (\d+)", bt)
@@ -247,7 +293,7 @@ def collect_host():
 
     # reboot needed when the installed kernel differs from the running one
     running_k = sysctl("kern.osrelease") or run(["uname", "-r"]).strip()
-    installed_k = run(["freebsd-version", "-k"]).strip()
+    installed_k = slow("kernel", lambda: run(["freebsd-version", "-k"]).strip())
     reboot_required = bool(installed_k and running_k and
                            installed_k.split("-p")[0] != running_k.split("-p")[0]
                            or (installed_k and installed_k != running_k))
@@ -271,27 +317,23 @@ def collect_host():
             failed.append(svc)
 
     # pending pkg upgrades (offline plan) + vulnerable pkgs as "security"
-    upg = run(["pkg", "upgrade", "-n"], timeout=40)
+    upg = slow("upgrade", lambda: run(["pkg", "upgrade", "-n"], timeout=40))
     pend = re.search(r"(\d+)\s+package[s]?\s+will be (?:upgraded|affected)", upg)
     pending = int(pend.group(1)) if pend else (
         len(re.findall(r"^\s+\S+:\s+\S+\s+->\s+\S+", upg, re.M)))
-    audit = run(["pkg", "audit", "-q"], timeout=40)
+    audit = slow("audit", lambda: run(["pkg", "audit", "-q"], timeout=40))
     security = len([l for l in audit.splitlines() if l.strip()])
 
     return {
         "hostname": socket.gethostname(),
         "kernel": running_k,
-        "os": f"FreeBSD {run(['freebsd-version', '-u']).strip() or running_k}",
+        "os": "FreeBSD " + (slow("userland", lambda: run(
+            ["freebsd-version", "-u"]).strip()) or running_k),
         "uptime_seconds": uptime,
         "booted_at": datetime.fromtimestamp(boot_epoch).isoformat(timespec="seconds"),
         "load": {"1": load[0], "5": load[1], "15": load[2], "ncpu": ncpu},
         "cpu": {"model": sysctl("hw.model"), "cores": ncpu, **cpu_sample()},
-        "memory": {
-            "total": total, "used": used, "available": avail,
-            "cached": cache, "buffers": wired,
-            "percent": round(100.0 * used / total, 1) if total else 0,
-            "swap_total": 0, "swap_used": 0,
-        },
+        "memory": collect_memory(),
         "sensors": collect_sensors(),
         "reboot_required": reboot_required,
         "reboot_packages": [],
@@ -405,7 +447,7 @@ def collect_docker():
             "status": "up" if up else "stopped",
             "image": j, "since": "", "health": health,
             "restarts": 0, "cpu": None, "mem": None, "mem_pct": None,
-            "version": _jail_version(j) if up else "",
+            "version": slow("version:" + j, lambda: _jail_version(j)) if up else "",
         })
     lst = sorted(containers, key=lambda c: c["name"])
     return {
@@ -479,8 +521,9 @@ def collect_vpn():
     for name in GROUP_MEMBERS:
         if name not in JAILS:
             continue
-        dr = run(["bastille", "sysrc", name, "-n", "defaultrouter"], timeout=10).strip()
-        # `bastille sysrc -n` prints the value; fall back to jexec route -n get
+        # the jail's own rc.conf, read from the host (no bastille: see jexec)
+        dr = run(["sysrc", "-f", f"/usr/local/bastille/jails/{name}/root/etc/rc.conf",
+                  "-n", "defaultrouter"], timeout=10).strip()
         bound = (vpn_ip in dr) if dr else False
         info["siblings"].append({"name": name, "bound": bound,
                                  "mode": dr or "?"})
@@ -945,6 +988,35 @@ def build_attention(host, disks, docker, vpn, services, media, routine,
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
+def loop(total, every):
+    """Collect every `every` seconds for `total` seconds, then exit.
+
+    cron cannot fire more often than once a minute, so it starts this once a
+    minute and this fills the minute. A lock keeps two loops from collecting
+    at once when a slow collection runs past the minute: the next loop waits
+    for it, then uses what is left of its own minute."""
+    import fcntl
+    start = time.time()
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    lock = open(OUT_DIR / ".collect.lock", "w")
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.time() - start > total - every:
+                return 0            # the earlier loop took this whole minute
+            time.sleep(0.5)
+    while True:
+        main()
+        done = time.time() - start
+        nxt = (int(done // every) + 1) * every      # next slot on the grid
+        # out of minute, or too little of it left for another collection
+        if nxt >= total or done > total - every / 2:
+            return 0
+        time.sleep(max(0.0, start + nxt - time.time()))
+
+
 def main():
     t0 = time.time()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -982,4 +1054,8 @@ def main():
 
 
 if __name__ == "__main__":
+    # status-collect.py                 one collection (Refresh button, tests)
+    # status-collect.py --loop 60 10    every 10 s for a minute (cron)
+    if len(sys.argv) == 4 and sys.argv[1] == "--loop":
+        sys.exit(loop(float(sys.argv[2]), float(sys.argv[3])))
     sys.exit(main())
