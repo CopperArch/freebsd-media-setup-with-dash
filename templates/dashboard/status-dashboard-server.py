@@ -16,6 +16,8 @@ gluetun->the vpn jail + wg.
 """
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import json
 import os
 import pwd
@@ -260,6 +262,14 @@ def known_jails():
                     and not tok.isdigit()
                     and not re.fullmatch(r"[0-9.]+", tok)):
                 names.add(tok)
+    # Each jail's own directory as well: `bastille list` comes back empty
+    # when another bastille command happens to be running (they share
+    # fixed temp files), and a real jail must not be refused as unknown.
+    try:
+        names.update(d.name for d in Path("/usr/local/bastille/jails").iterdir()
+                     if (d / "jail.conf").is_file())
+    except OSError:
+        pass
     return names
 
 
@@ -267,6 +277,53 @@ def valid_jail(name):
     if not name or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name):
         return False
     return name in known_jails()
+
+
+# ── live host numbers ────────────────────────────────────────────────────────
+# status.json is rewritten every 10 s, which is right for jails and apps but
+# too slow for a CPU or memory gauge. The dashboard polls this every 2 s for
+# the cheap host readings, taken with the collector's own functions so the two
+# can never disagree about what a number means.
+_live_lock = threading.Lock()
+_live = {"mod": None, "cpu": None, "at": 0.0, "data": None}
+
+
+def live_status():
+    with _live_lock:
+        now = time.time()
+        if _live["data"] and now - _live["at"] < 1:
+            return _live["data"]      # several open dashboards share one reading
+        c = _live["mod"]
+        if c is None:
+            spec = importlib.util.spec_from_file_location(
+                "status_collect", BIN / "status-collect.py")
+            c = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(c)
+            _live["mod"] = c
+        prev, cur = _live["cpu"], c.cpu_read()
+        if prev is None or now - _live["at"] > 30:
+            # first call, or nobody has looked for a while: a busy% measured
+            # over the whole gap would be an average, not a reading
+            prev = cur
+            time.sleep(0.25)
+            cur = c.cpu_read()
+        load = os.getloadavg()
+        m = re.search(r"sec = (\d+)", c.sysctl("kern.boottime"))
+        data = {
+            "epoch": now,
+            "host": {
+                "load": {"1": load[0], "5": load[1], "15": load[2],
+                         "ncpu": os.cpu_count() or 1},
+                "cpu": c.cpu_usage(prev, cur),
+                "memory": c.collect_memory(),
+                "sensors": c.collect_sensors(),
+            },
+            "disks": c.collect_disks(),
+        }
+        if m:
+            data["host"]["uptime_seconds"] = max(0, int(now) - int(m.group(1)))
+        _live.update(cpu=cur, at=now, data=data)
+        return data
 
 
 def recollect():
@@ -909,6 +966,11 @@ class Handler(SimpleHTTPRequestHandler):
         if route == "/api/job":
             with _job_lock:
                 return self._json(200, dict(_job))
+        if route == "/api/live":
+            try:
+                return self._json(200, live_status())
+            except Exception as e:      # the dashboard keeps its last numbers
+                return self._json(503, {"error": str(e)})
         if route == "/api/panes":
             return self._json(200, {"panes": available_panes()})
         if route == "/api/ask-targets":
@@ -1037,8 +1099,38 @@ class Handler(SimpleHTTPRequestHandler):
         return self._json(202, {"started": True, "total": len(todo)})
 
 
+def _own_code():
+    """Digest of this server and the modules it loads from the same place.
+    Content, not mtime: re-applying the installer rewrites identical files."""
+    h = hashlib.sha256()
+    for name in ("status-dashboard-server.py", "status-collect.py", "status_keys.py"):
+        try:
+            h.update((BIN / name).read_bytes())
+        except OSError:
+            h.update(b"-")
+    return h.digest()
+
+
+def _restart_when_updated():
+    """Exit once this server's code on disk differs from what is running, so
+    daemon(8) -r starts the new version. An update replaces these files but
+    cannot restart the server itself: the update is a job this server runs.
+    Waits until no job has been running for 15 s, so the dashboard has read
+    the finished job's result first."""
+    started, idle = _own_code(), 0
+    while True:
+        time.sleep(5)
+        with _job_lock:
+            busy = _job["running"]
+        idle = 0 if busy else idle + 1
+        if idle >= 3 and _own_code() != started:
+            print("server code changed on disk -- restarting", flush=True)
+            os._exit(0)
+
+
 def main():
     os.chdir(ROOT)
+    threading.Thread(target=_restart_when_updated, daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), partial(Handler, directory=str(ROOT)))
     print(f"status dashboard on http://{BIND}:{PORT} (root {ROOT})", flush=True)
     srv.serve_forever()

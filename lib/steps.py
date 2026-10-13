@@ -901,6 +901,29 @@ def configure_konsole_theme(ctx: Ctx, accept) -> tuple[bool, str]:
 
 
 # ── 7. dashboard (loopback HTTP + collector + KWin below-layer window) ───────
+def retire_old_dashboard_server(c) -> None:
+    """Get a repair server from before 0.6.8 onto the files just installed.
+
+    A current server notices that its own code changed and restarts (see
+    _restart_when_updated in status-dashboard-server.py). An older one does
+    neither that nor /api/live, so that 404 is how it is recognised. It is
+    stopped 90 s from now -- it may be the very process running this install
+    as an update job, and the dashboard still has to read the job's result --
+    and daemon(8) -r or the cron watchdog starts the new one."""
+    import urllib.error
+    import urllib.request
+    try:
+        urllib.request.urlopen("http://127.0.0.1:8099/api/live", timeout=5)
+        return
+    except urllib.error.HTTPError as e:
+        if e.code != 404:
+            return
+    except Exception:  # noqa: BLE001 — not running: the watchdog starts it
+        return
+    c.sudo.run(["sh", "-c", "(sleep 90; pkill -f status-dashboard-server.py) "
+                "< /dev/null > /dev/null 2>&1 &"], timeout=30)
+
+
 def install_dashboard(ctx: Ctx, accept) -> tuple[bool, str]:
     if not ctx.profile.use_dashboard:
         return True, "dashboard disabled in profile"
@@ -1024,12 +1047,14 @@ def install_dashboard(ctx: Ctx, accept) -> tuple[bool, str]:
             "root", tag="dashboard-watchdog")
         # The collector runs as root as well: everything it reports about a
         # jail (service health, versions, the VPN's exit address) comes from
-        # `bastille cmd`, which only root may run. DASHBOARD_HOME points it
+        # `jexec`, which only root may run. DASHBOARD_HOME points it
         # at this user's data directory, as for the server.
         collect = (f"env DASHBOARD_HOME={home} python3.11 "
                    f"{bin_dir}/status-collect.py")
+        # cron starts it once a minute; --loop has it collect every 10 s for
+        # that minute, so the dashboard is never more than seconds behind.
         c.plat.crontab_user(
-            c.sudo, [f"* * * * * {collect} >/dev/null 2>&1  # status-dashboard collector"],
+            c.sudo, [f"* * * * * {collect} --loop 60 10 >/dev/null 2>&1  # status-dashboard collector"],
             "root", tag="dashboard-collector")
         c.sudo.run(["sh", "-c", f"({collect}) < /dev/null > /dev/null 2>&1 &"],
                    timeout=30)
@@ -1041,6 +1066,7 @@ def install_dashboard(ctx: Ctx, accept) -> tuple[bool, str]:
         # waiting to read output that will never stop coming. Redirecting
         # away from that pipe and backgrounding the whole thing here (rather
         # than relying on daemon's own detach) sidesteps it either way.
+        retire_old_dashboard_server(c)
         c.sudo.run(["sh", "-c", f"({launch}) < /dev/null > /dev/null 2>&1 &"],
                    timeout=30)
 
