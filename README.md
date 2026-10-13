@@ -1,16 +1,97 @@
-# freebsd-media-setup-with-dash
+# FreeBSD CopperArch Media Server
 
-A FreeBSD port of [`linux-media-setup-with-dash`](https://github.com/CopperArch/linux-media-setup-with-dash):
-the same self-healing home media server — media/VPN stacks, a desktop status
-dashboard, a nightly self-heal routine — rebuilt on **FreeBSD 15.1** with a
-**KDE Plasma 6** desktop and an installer, using the OS's native primitives
-instead of Docker.
+**Turn a FreeBSD machine into a home media server that looks after itself.**
+One installer sets up the streaming apps, the download apps behind a
+WireGuard VPN with a kill-switch, a dashboard that shows the whole machine at
+a glance, and a nightly routine that finds and fixes problems while you
+sleep.
 
-The Linux edition targets a Docker-capable systemd distro. FreeBSD has no
-Docker, so this isn't a reskin — the whole runtime substrate is different. What
-carries over unchanged is the *architecture*: a profile-driven, accept-gated,
-idempotent installer with `{{PLACEHOLDER}}` templating, plus a dashboard and a
-nightly routine that keep the box healed.
+It is the FreeBSD edition of
+[CopperArch-Linux-Media](https://github.com/CopperArch/CopperArch-Linux-Media),
+rebuilt on **FreeBSD 15.1** with native tools: jails instead of Docker, pf
+instead of a firewall container, ZFS for storage.
+
+![The dashboard](docs/screenshots/dashboard.png)
+
+## What it does
+
+1. **Asks a few questions**, in a graphical wizard or in the terminal, or
+   reads them from a saved profile.
+2. **Creates one jail per app** with Bastille and installs each app from
+   FreeBSD's own packages: Jellyfin, Plex, Sonarr, Radarr, Prowlarr, Bazarr,
+   qBittorrent, Seerr, Caddy, and optionally Nextcloud.
+3. **Routes the download apps through a WireGuard tunnel.** A pf kill-switch
+   means that if the tunnel drops they are cut off, never exposed on your
+   real address.
+4. **Gives you a dashboard** with one-click fixes for the things that go wrong.
+5. **Keeps itself healthy** with a routine that runs every night.
+
+## Features
+
+**Media and downloads**
+- Jellyfin and Plex for streaming; Sonarr, Radarr and Prowlarr to find and
+  organise films and series; Bazarr for subtitles; qBittorrent to download;
+  Seerr for requests.
+- Optional Nextcloud (files and photos) with its own PostgreSQL jail.
+- Caddy reverse proxy and optional public access.
+- Each app is isolated in its own jail; the media library is mounted in.
+
+**VPN**
+- Kernel WireGuard in a dedicated jail. Works with any provider that gives
+  you a WireGuard config (Proton VPN, Windscribe, Surfshark, Mullvad, IVPN
+  and others) or with a server of your own.
+- **Change VPN provider** from the dashboard: paste the new `.conf` file.
+- Kill-switch enforced by pf on the host. With no VPN configured, the
+  download apps simply stay offline until you add one.
+
+**Dashboard**
+- CPU, memory, swap, temperatures and disks, live every 2 seconds.
+- Every jail, service, the VPN and the media library, refreshed every
+  10 seconds.
+- A **Needs attention** list with a **Fix** button next to each problem. Fixes
+  come from a fixed whitelist; the page cannot run anything else.
+- Update, Reboot and Refresh buttons; a schedule dialog for the nightly run.
+- Spots a newly plugged-in drive and offers to add it to the storage pool.
+- Only reachable from the machine itself (loopback).
+
+**Self-healing**
+- Nightly: ZFS pool and disk health, stopped jails and services, the VPN
+  tunnel, package updates with a ZFS snapshot taken first, clean-up of
+  old downloads and caches.
+- The installer is safe to run again: on a drifted machine it repairs what
+  changed and leaves the rest alone.
+
+**Three ways to install**
+- A bootable ISO that installs FreeBSD, KDE Plasma and the media server.
+- A first-boot script for a fresh FreeBSD install (adds KDE Plasma and
+  Bastille), then the installer.
+- The installer on its own, with `--dry-run` to preview and a saved profile
+  to reproduce a machine.
+
+**Optional local AI**
+- Off by default. Installs Ollama with an open-weights model sized to the
+  machine's RAM and adds chat panes to the dashboard. Free and offline.
+
+## Screenshots
+
+![Change VPN provider dialog](docs/screenshots/change-vpn-provider.png)
+
+The screenshots use a demonstration machine: host name, addresses and
+downloads are made up.
+
+## Related projects
+
+- [CopperArch-Linux-Media](https://github.com/CopperArch/CopperArch-Linux-Media):
+  the same server on Linux, with Docker.
+- [CopperBSD](https://github.com/CopperArch/CopperBSD): a FreeBSD
+  distribution with this media server built in and a native dashboard.
+
+## How it differs from the Linux edition
+
+FreeBSD has no Docker, so this is not a reskin: the whole runtime is
+different. What carries over is the design: a profile-driven installer that
+asks before each change and can be re-run safely, plus a dashboard and a
+nightly routine that keep the machine healthy.
 
 ## The port, in one table
 
