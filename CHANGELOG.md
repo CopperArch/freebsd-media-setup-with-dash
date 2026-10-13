@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.8 - 2026-10-13
+- README: say what it does, list the features, add screenshots (#14)
+
 ## 0.6.7 - 2026-10-12
 - VPN that actually protects and connects; dashboard and nightly routine without false alarms (#12)
 
