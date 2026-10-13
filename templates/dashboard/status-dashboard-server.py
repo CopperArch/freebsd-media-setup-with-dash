@@ -810,15 +810,15 @@ def run_fix(fix_id, args):
 PANES = [
     ("claude",  "Claude Code",     "claude",   "agent",  None),
     ("opencode", "opencode",       "opencode", "agent",  None),
-    ("gpt",     "ChatGPT",         "curl",     "paid",   "CHATGPT_MODEL"),
-    ("gm",      "Gemini",          "curl",     "paid",   "GEMINI_MODEL"),
-    ("hy",      "Hy4",             "curl",     "paid",   "HY4_MODEL"),
+    ("gpt",     "ChatGPT",         "opencode", "paid",   "CHATGPT_MODEL"),
+    ("gm",      "Gemini",          "opencode", "paid",   "GEMINI_MODEL"),
+    ("hy",      "Hy4",             "opencode", "paid",   "HY4_MODEL"),
     # "oa" kept as the id (tmux session names, saved picks) though Ox Alpha
     # was revealed as GLM 5.3 Flash — labelled by what it actually is.
-    ("oa",      "GLM 5.3",         "curl",     "free",   "OXALPHA_MODEL"),
-    ("ds",      "DeepSeek",        "curl",     "free",   "DEEPSEEK_MODEL"),
-    ("mm",      "Minimax M3",      "curl",     "free",   "MINIMAX_MODEL"),
-    ("qw",      "Qwen 3.8",        "curl",     "free",   "QWEN_MODEL"),
+    ("oa",      "GLM 5.3",         "opencode", "free",   "OXALPHA_MODEL"),
+    ("ds",      "DeepSeek",        "opencode", "free",   "DEEPSEEK_MODEL"),
+    ("mm",      "Minimax M3",      "opencode", "free",   "MINIMAX_MODEL"),
+    ("qw",      "Qwen 3.8",        "opencode", "free",   "QWEN_MODEL"),
     ("llm",     "Local LLM",       "ollama",   "local",  None),
     ("glm",     "GLM (local)",     "ollama",   "local",  None),
     ("ask",     "Ask Claude",      "claude",   "hidden", None),
@@ -859,10 +859,24 @@ LOCAL_AI_FILE = _HOME / ".config/status-dashboard/local-ai.env"
 GLM_PANES = ("glm", "askglm")
 
 
+# Where a pane's program is looked for. The panes run as the desktop user
+# (ttyd -> dashboard-pane.sh, which sets this same PATH); this server runs as
+# root, whose PATH does not include that user's own bin directories, so a
+# plain which() hides a Claude Code or opencode installed there. Only used to
+# look, never to run anything.
+PANE_PATH = os.pathsep.join([
+    str(_HOME / ".local/bin"), str(_HOME / ".opencode/bin"),
+    "/usr/local/bin", "/usr/bin", "/bin", "/sbin", "/usr/sbin"])
+
+
+def pane_program(name):
+    return shutil.which(name, path=PANE_PATH)
+
+
 def pane_enabled(pid, needs):
     if pid in GLM_PANES and not LOCAL_AI_FILE.exists():
         return False
-    return bool(shutil.which(needs))
+    return bool(pane_program(needs))
 
 
 def read_pricing():
@@ -906,7 +920,7 @@ def available_panes():
         out.append({"id": pid, "label": label, "group": eff_group,
                     "price": format_price(entry)})
     # FREE tier: whatever is free on OpenRouter right now, refreshed nightly.
-    if shutil.which("opencode"):
+    if pane_program("opencode"):
         for m in read_free_models():
             price = f"free until {m['expires']}" if m.get("expires") else "free"
             out.append({"id": "free:" + m["id"], "label": m.get("name") or m["id"],
