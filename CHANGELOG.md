@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.9 - 2026-10-13
+- Dashboard: list a pane only when its program is installed (#15)
+
 ## 0.6.8 - 2026-10-13
 - README: say what it does, list the features, add screenshots (#14)
 
