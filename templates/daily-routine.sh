@@ -70,18 +70,28 @@ fi
 
 # SMART: smartctl exists on FreeBSD too. Use device nodes; ZFS handles the
 # array logic so we only assert per-disk health here.
+# Only smartctl's verdict line counts: grepping the whole output for "failed"
+# reported every NVMe disk as failing, because smartctl cannot open nda/nvd
+# disks at all ("open device: /dev/nda0 failed: INQUIRY failed"). NVMe health
+# is read from the controller node (/dev/nvmeN) instead.
+smart_check() {   # smart_check <device> <label>
+    out=$(smartctl -H "$1" 2>&1)
+    if echo "$out" | grep -qiE 'test result: *FAIL|Health Status: *[A-Z_]*FAIL'; then
+        warn "  [WARN] SMART $2: $(echo "$out" | grep -iE 'test result|Health Status' | head -1)"
+    elif echo "$out" | grep -qiE 'test result: *PASSED|Health Status: *OK'; then
+        log "  [OK]   SMART $2: healthy"
+    else
+        # a virtual disk or a USB bridge: nothing to read, not a fault
+        log "  [SKIP] SMART $2: no SMART data from this device"
+    fi
+}
 if command -v smartctl >/dev/null 2>&1; then
     for dev in $(sysctl -n kern.disks 2>/dev/null); do
-        case "$dev" in cd*|md*|fd*) continue ;; esac
-        out=$(smartctl -H "/dev/$dev" 2>&1)
-        if echo "$out" | grep -qi "FAILED\|FAILING"; then
-            warn "  [WARN] SMART /dev/$dev: $(echo "$out" | grep -i 'health\|fail' | head -1)"
-        elif echo "$out" | grep -qi "PASSED\|: OK"; then
-            log "  [OK]   SMART /dev/$dev: healthy"
-        else
-            # a virtual disk or a USB bridge: nothing to read, not a fault
-            log "  [SKIP] SMART /dev/$dev: no SMART data from this device"
-        fi
+        case "$dev" in cd*|md*|fd*|nda*|nvd*) continue ;; esac
+        smart_check "/dev/$dev" "/dev/$dev"
+    done
+    for ctl in /dev/nvme[0-9] /dev/nvme[0-9][0-9]; do
+        [ -c "$ctl" ] && smart_check "$ctl" "$ctl (NVMe)"
     done
 fi
 
