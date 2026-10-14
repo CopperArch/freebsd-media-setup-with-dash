@@ -55,6 +55,22 @@ if [[ -z "${DASHBOARD_PANE_TMUX:-}" ]] && command -v tmux >/dev/null 2>&1 \
           ';' bind-key -T root TripleClick1Pane select-pane -t = '\;' copy-mode -M '\;' send-keys -X select-line '\;' send-keys -X copy-pipe-and-cancel "$CLIP"
         )
     fi
+    # Paste the other way: right-click or middle-click pastes the desktop
+    # clipboard into the pane (as a bracketed paste, so a multi-line paste
+    # arrives as one block instead of being run line by line). Right-click
+    # used to open tmux's own menu, which nobody wants here.
+    PASTE=""
+    if command -v wl-paste >/dev/null 2>&1; then PASTE="wl-paste -n"
+    elif command -v xclip >/dev/null 2>&1; then PASTE="xclip -o -selection clipboard"
+    elif command -v xsel  >/dev/null 2>&1; then PASTE="xsel -ob"
+    fi
+    if [[ -n "$PASTE" ]]; then
+        PASTE_CMD="$PASTE | tmux load-buffer -b desktop - && tmux paste-buffer -p -d -b desktop -t '#{pane_id}'"
+        COPY_OPTS+=(
+          ';' bind-key -T root MouseDown3Pane select-pane -t = '\;' run-shell "$PASTE_CMD"
+          ';' bind-key -T root MouseDown2Pane select-pane -t = '\;' run-shell "$PASTE_CMD"
+        )
+    fi
     exec tmux new-session -A -s "dash-${PROG//[^A-Za-z0-9_-]/_}" "$0" "$PROG" "$@" "${COPY_OPTS[@]}"
 fi
 
