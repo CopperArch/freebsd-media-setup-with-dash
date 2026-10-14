@@ -811,6 +811,8 @@ def install_daily_routine(ctx: Ctx, accept) -> tuple[bool, str]:
             old_state.rename(new_state)
         dst = new_state / "scripts" / "daily-routine.sh"
         render_file(c.tpl / "daily-routine.sh", dst, c.v, mode=0o755)
+        render_file(c.tpl / "security-check.sh", dst.parent / "security-check.sh",
+                    c.v, mode=0o755)
         expr = cron_expr(c.profile.daily_routine_frequency, c.profile.daily_routine_time)
         entries = [f"{expr} {dst} >/dev/null 2>&1"]
         # root, not the profile user: every real op in daily-routine.sh
