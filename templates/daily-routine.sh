@@ -315,6 +315,18 @@ if jls -j caddy >/dev/null 2>&1; then
     fi
 fi
 
+# ─── 2e. Security & firewall ────────────────────────────────────────────────
+# pf on, no VPN leak, secret files owner-only; on the full run also what the
+# internet can reach (probed from the VPN jail) and sshd. Fixes what it can.
+banner "Security & Firewall"
+SEC="$(dirname "$0")/security-check.sh"
+if [ -x "$SEC" ]; then
+    if [ "$QUICK" = true ]; then "$SEC" 2>&1 | tee -a "$LOG"
+    else "$SEC" --full 2>&1 | tee -a "$LOG"; fi
+else
+    log "  [SKIP] security-check.sh not found"
+fi
+
 if [ "$QUICK" = true ]; then
     banner "Quick mode — skipping updates"
     log "Daily Routine (quick) finished"
@@ -401,6 +413,10 @@ log "  freebsd-update fetch/install (security patches)"
 env PAGER=cat freebsd-update --not-running-from-cron fetch install >>"$LOG" 2>&1 \
     && log "  [OK] freebsd-update applied" \
     || log "  [INFO] freebsd-update: nothing to do or needs reboot"
+
+# ─── 4b. Security audit: what is still vulnerable after the updates ─────────
+banner "Security Audit (pkg audit)"
+[ -x "$SEC" ] && "$SEC" --audit 2>&1 | tee -a "$LOG"
 
 # ─── 5. Log rotation guard (replaces docker log-cap check) ──────────────────
 # Mirrors the Linux daily-routine.sh retention window (2026-09-26): 5 days,
