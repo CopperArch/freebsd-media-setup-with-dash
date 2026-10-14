@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.11 - 2026-10-14
+- Nightly routine: read NVMe SMART from the controller, judge only smartctl's verdict (#18)
+
 ## 0.6.10 - 2026-10-14
 - Dashboard pane: right-click or middle-click pastes the desktop clipboard (#17)
 
