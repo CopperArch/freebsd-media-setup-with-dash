@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.13 - 2026-11-05
+- media-heal.py: point the no-peers warning at the vpn jail, not gluetun (#20)
+
 ## 0.6.12 - 2026-11-05
 - Nightly qBittorrent peer check, English-only audio, reboot after kernel updates (#19)
 
