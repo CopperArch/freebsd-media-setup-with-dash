@@ -415,6 +415,18 @@ else
     log "  [SKIP] jellyfin-duplicates.py not installed"
 fi
 
+# ─── 3e. qBittorrent peers + English-only audio (2026-11-05) ───────────────
+# After the jail updates above, which can restart qbittorrent and the arrs.
+# media-heal.py: rebinds qBittorrent's listen port when it has 0 DHT nodes
+# (stuck on a dead tunnel after a vpn reconnect), and rejects any release
+# with a non-English audio track in every Sonarr/Radarr profile.
+banner "qBittorrent Peers & English-Only Audio"
+if [ -x "$ROOT/.local/bin/media-heal.py" ]; then
+    "$ROOT/.local/bin/media-heal.py" 2>&1 | tee -a "$LOG"
+else
+    log "  [SKIP] media-heal.py not installed"
+fi
+
 # ─── 4. Host base + package updates ─────────────────────────────────────────
 banner "Host Updates"
 log "  pkg upgrade (host)"
@@ -494,3 +506,13 @@ if [ -f "$AI_ENV" ] && command -v ollama >/dev/null 2>&1; then
 fi
 
 banner "Daily Routine finished on $(hostname)"
+
+# ─── 8. Reboot if freebsd-update installed a new kernel (2026-11-05) ────────
+# Last thing the routine does, so every step above has finished.
+# freebsd-version -k is the installed kernel, uname -r the running one.
+if [ "$(freebsd-version -k)" != "$(uname -r)" ]; then
+    log "  [OK]   Rebooting to finish updates (kernel $(uname -r) -> $(freebsd-version -k))"
+    sync
+    shutdown -r +1 "daily routine: rebooting for kernel update" >>"$LOG" 2>&1 \
+        || warn "  [WARN] reboot needed (new kernel) but shutdown -r failed"
+fi

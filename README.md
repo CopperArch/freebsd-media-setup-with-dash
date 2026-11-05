@@ -225,8 +225,12 @@ shown as "Custom VPN".
 3. **Nightly `daily-routine.sh` (03:00)** — POSIX sh: checks rc services, ZFS
    pool health, SMART, jail liveness, VPN tunnel reality + up-to-3 restarts,
    re-asserts the pf kill-switch, then `pkg upgrade` per jail behind a ZFS
-   snapshot with **verify + auto-rollback**, host `pkg` + `freebsd-update`, and
-   log pruning. It also moves TV episodes that landed in the movies folder
+   snapshot with **verify + auto-rollback**, host `pkg` + `freebsd-update`
+   (rebooting at the very end when that installed a new kernel), and log
+   pruning. `media-heal.py` makes qBittorrent rebind its port when a vpn
+   reconnect leaves it with 0 DHT nodes and every torrent stuck, and keeps
+   every Sonarr/Radarr profile English-only (any release with a non-English
+   audio track is rejected). It also moves TV episodes that landed in the movies folder
    (and movies in the TV folder) to the right library
    (`media-library-sort.py`), removes duplicate movies/episodes keeping the
    best copy (`jellyfin-duplicates.py` — **deletes files**, so it stays off
