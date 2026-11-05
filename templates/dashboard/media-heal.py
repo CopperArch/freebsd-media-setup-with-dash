@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.11
 """Nightly media self-heal checks, run by daily-routine.sh (ported from the
 Linux edition's media-stack-selfheal.py, 2026-11-05).
 

@@ -6,7 +6,8 @@
 # [WARN] starting "Fixed:", so it shows on the dashboard once.
 #
 #   security-check.sh            quick checks: pf, VPN leak, secret files
-#   security-check.sh --full     + what the internet can reach, sshd
+#   security-check.sh --full     + what the internet can reach, sshd, and
+#                                intrusion-check.py (malware, rootkits, logins)
 #   security-check.sh --audit    known-vulnerable packages (host + jails) and
 #                                a pending kernel; run after the updates
 #   security-check.sh --accept   record what is exposed now as expected
@@ -174,5 +175,14 @@ if service sshd enabled >/dev/null 2>&1; then
     else
         ok "sshd: not open to the internet with password logins"
     fi
+fi
+
+# ── 6. Malware, rootkits, logins and anything new (2026-11-05) ───────────────
+# ClamAV + rkhunter, SSH/sudo/pw/Jellyfin/Nextcloud login audit, and new
+# accounts/keys/rules/cron/services/jails/ports/outbound programs vs. a
+# baseline (intrusion-check.py). E-mails on FAIL.
+IC="$(dirname "$0")/intrusion-check.py"
+if [ -x "$IC" ]; then
+    if [ "$MODE" = "--accept" ]; then "$IC" --accept; else "$IC"; fi
 fi
 exit 0
