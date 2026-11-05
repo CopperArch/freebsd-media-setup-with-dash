@@ -230,7 +230,15 @@ shown as "Custom VPN".
    pruning. `media-heal.py` makes qBittorrent rebind its port when a vpn
    reconnect leaves it with 0 DHT nodes and every torrent stuck, and keeps
    every Sonarr/Radarr profile English-only (any release with a non-English
-   audio track is rejected). It also moves TV episodes that landed in the movies folder
+   audio track is rejected).
+   The full security pass ends with `intrusion-check.py`: ClamAV over files
+   changed in the last day (the whole home folder on Sundays), chkrootkit
+   (rkhunter isn't packaged for FreeBSD 15), SSH/sudo/doas and pw(8)
+   account-change checks, failed Jellyfin/Nextcloud logins, and anything
+   new since the last accepted state — login accounts, wheel members, SSH
+   keys, sudo/doas rules, cron jobs, enabled services, jails, listening
+   ports, programs talking to the internet. Problems are e-mailed;
+   `security-check.sh --accept` records a change you made yourself. It also moves TV episodes that landed in the movies folder
    (and movies in the TV folder) to the right library
    (`media-library-sort.py`), removes duplicate movies/episodes keeping the
    best copy (`jellyfin-duplicates.py` — **deletes files**, so it stays off

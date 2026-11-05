@@ -44,6 +44,8 @@ class Platform:
         "curl":          "curl",
         "jq":            "jq",
         "smartmontools": "smartmontools",
+        "clamav":        "clamav",        # intrusion-check.py malware scan
+        "chkrootkit":    "chkrootkit",    # intrusion-check.py rootkit scan
         "htop":          "htop",
         "ncdu":          "ncdu",
         "rsync":         "rsync",

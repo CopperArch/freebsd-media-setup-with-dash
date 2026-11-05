@@ -75,7 +75,7 @@ def check_freebsd(ctx: Ctx, accept) -> tuple[bool, str]:
 def install_host_packages(ctx: Ctx, accept) -> tuple[bool, str]:
     need = ["python3", "git", "curl", "jq", "bastille"]
     if ctx.profile.use_daily_routine:
-        need += ["smartmontools", "rsync"]
+        need += ["smartmontools", "rsync", "clamav", "chkrootkit"]
     if ctx.profile.use_dashboard:
         need += ["tkinter", "librewolf"]
     if ctx.profile.use_vpn_stack:
@@ -813,6 +813,12 @@ def install_daily_routine(ctx: Ctx, accept) -> tuple[bool, str]:
         render_file(c.tpl / "daily-routine.sh", dst, c.v, mode=0o755)
         render_file(c.tpl / "security-check.sh", dst.parent / "security-check.sh",
                     c.v, mode=0o755)
+        render_file(c.tpl / "intrusion-check.py", dst.parent / "intrusion-check.py",
+                    c.v, mode=0o755)
+        # ClamAV for intrusion-check.py: virus definitions kept current by
+        # freshclam.
+        c.sudo.run(["sysrc", "clamav_freshclam_enable=YES"], timeout=30)
+        c.sudo.run(["service", "clamav_freshclam", "start"], timeout=300)
         expr = cron_expr(c.profile.daily_routine_frequency, c.profile.daily_routine_time)
         entries = [f"{expr} {dst} >/dev/null 2>&1"]
         # root, not the profile user: every real op in daily-routine.sh
