@@ -210,7 +210,7 @@ def qbit_peer_health(opener):
     log(f"[WARN] qBittorrent still has no peers (connection={conn}, "
         f"DHT nodes={dht})")
     alert(f"qBittorrent can't reach any peers (connection={conn}, DHT "
-          f"nodes={dht}) even after rebinding its port — check gluetun")
+          f"nodes={dht}) even after rebinding its port — check the vpn jail")
     return False
 
 
