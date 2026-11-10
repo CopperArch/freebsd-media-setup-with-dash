@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.16 - 2026-11-10
+- Self-heal: English-dub fallback for foreign-original titles (#23)
+
 ## 0.6.15 - 2026-11-10
 - Dashboard: "off" really stops the AI pane (#22)
 
