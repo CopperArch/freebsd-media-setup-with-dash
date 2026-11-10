@@ -590,9 +590,19 @@ const $ = id => document.getElementById(id);
     }
   }
 
+  // "off" = really off. Every agent pane lives in a tmux session (so resizing
+  // never kills it), which also meant blanking the iframe only DETACHED it and
+  // the AI kept running headless. The server kills the dash-* sessions and
+  // unloads any Ollama model. Only on a deliberate press — never on page load.
+  function aiOff(){
+    fetch("api/ai-off", {method:"POST", headers:{"Content-Type":"application/json"},
+                         body:"{}"}).catch(()=>{});
+  }
+
   for(const b of ctl.querySelectorAll("button[data-w]"))
     b.onclick = () => {
       const next = Number(b.dataset.w);
+      if(next === 0) aiOff();
       apply(next);
       // Opening the dock counts as wanting to use it — boot the current
       // pane if nothing has started yet (width buttons never reload a
@@ -726,6 +736,7 @@ const $ = id => document.getElementById(id);
     if(e.ctrlKey && (e.key === "`" || e.code === "Backquote")){
       e.preventDefault();
       const next = WIDTHS[(WIDTHS.indexOf(w) + 1) % WIDTHS.length];
+      if(next === 0) aiOff();
       apply(next);
       if(next > 0 && !loaded) openPane(pane, null, null, false);
     }

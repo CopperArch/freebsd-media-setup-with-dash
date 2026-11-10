@@ -939,6 +939,36 @@ def ask_targets():
     return out
 
 
+# ── AI pane "off" ────────────────────────────────────────────────────────────
+# dashboard-pane.sh runs every AI/agent pane inside a tmux session named
+# dash-<pane> so that RESIZING the dock never kills a running agent. Side
+# effect (2026-11-10): pressing "off" only blanked the iframe, the tmux client
+# detached, and the AI kept running headless. "off" now means off: kill every
+# dash-* session and unload any model Ollama is holding in RAM/VRAM.
+def ai_off():
+    killed = []
+    rc, out = sh(["tmux", "list-sessions", "-F", "#{session_name}"], timeout=10)
+    if rc == 0:
+        for name in out.split():
+            if re.fullmatch(r"dash-[A-Za-z0-9_-]+", name):
+                if sh(["tmux", "kill-session", "-t", "=" + name], timeout=10)[0] == 0:
+                    killed.append(name)
+    unloaded = []
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/ps", timeout=5) as r:
+            models = [m["name"] for m in json.load(r).get("models", [])]
+        for m in models:
+            req = urllib.request.Request(
+                "http://127.0.0.1:11434/api/generate",
+                data=json.dumps({"model": m, "keep_alive": 0}).encode(),
+                headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=30).read()
+            unloaded.append(m)
+    except Exception:
+        pass                      # Ollama not installed/running: nothing to unload
+    return {"ok": True, "killed": killed, "unloaded": unloaded}
+
+
 # ── http ─────────────────────────────────────────────────────────────────────
 class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *a):
@@ -1032,6 +1062,9 @@ class Handler(SimpleHTTPRequestHandler):
                 threading.Thread(target=_kill_group, args=(p,),
                                  daemon=True).start()
             return self._json(200, {"ok": True, "output": "cancelling"})
+
+        if route == "/api/ai-off":
+            return self._json(200, ai_off())
 
         if route == "/api/refresh":
             rc, out = recollect()
