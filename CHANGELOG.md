@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.15 - 2026-11-10
+- Dashboard: "off" really stops the AI pane (#22)
+
 ## 0.6.14 - 2026-11-05
 - Nightly intrusion & malware check (ClamAV, chkrootkit, logins, baseline) (#21)
 
