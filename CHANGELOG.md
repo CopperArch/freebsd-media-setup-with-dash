@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.18 - 2026-11-12
+- Dashboard: AI off now reaches the desktop user's tmux panes (#25)
+
 ## 0.6.17 - 2026-11-12
 - Self-heal: re-login to qBittorrent on 403, longer timeout for dual-audio fallback (#24)
 
