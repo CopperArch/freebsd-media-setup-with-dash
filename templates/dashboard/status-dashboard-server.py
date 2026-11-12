@@ -945,13 +945,31 @@ def ask_targets():
 # effect (2026-11-10): pressing "off" only blanked the iframe, the tmux client
 # detached, and the AI kept running headless. "off" now means off: kill every
 # dash-* session and unload any model Ollama is holding in RAM/VRAM.
+def _desktop_tmux():
+    """tmux argv aimed at the desktop user's tmux server.
+
+    This server runs as root, but the pane sessions (dashboard-pane.sh under
+    ttyd) belong to the desktop user, whose tmux socket is
+    /tmp/tmux-<uid>/default. Plain `tmux` as root looks at root's own socket,
+    finds nothing, and "off" left the AI running (found on the CopperBSD
+    test VM, 2026-11-12). Root may connect to another user's tmux server."""
+    if os.geteuid() == 0 and _DESKTOP_USER != "root":
+        try:
+            uid = pwd.getpwnam(_DESKTOP_USER).pw_uid
+            return ["tmux", "-S", f"/tmp/tmux-{uid}/default"]
+        except KeyError:
+            pass
+    return ["tmux"]
+
+
 def ai_off():
     killed = []
-    rc, out = sh(["tmux", "list-sessions", "-F", "#{session_name}"], timeout=10)
+    tmux = _desktop_tmux()
+    rc, out = sh(tmux + ["list-sessions", "-F", "#{session_name}"], timeout=10)
     if rc == 0:
         for name in out.split():
             if re.fullmatch(r"dash-[A-Za-z0-9_-]+", name):
-                if sh(["tmux", "kill-session", "-t", "=" + name], timeout=10)[0] == 0:
+                if sh(tmux + ["kill-session", "-t", "=" + name], timeout=10)[0] == 0:
                     killed.append(name)
     unloaded = []
     try:
