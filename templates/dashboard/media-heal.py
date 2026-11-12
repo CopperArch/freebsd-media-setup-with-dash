@@ -26,6 +26,7 @@ import re
 import sys
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from http.cookiejar import CookieJar
 
@@ -72,15 +73,38 @@ def qbit_login():
         return None
 
 
+def _qbit_relogin(opener):
+    """Log in again through the SAME opener (its cookie jar takes the new SID).
+
+    2026-11-10: the nightly run hit "can't list torrents for cleanup: HTTP
+    Error 403" part-way through — the WebUI session had been dropped (qBit
+    restart, session timeout or similar; a second login does NOT kill the
+    first). On a 403, log in once more and retry the call."""
+    body = urllib.parse.urlencode(
+        {"username": QBIT["user"], "password": QBIT["pass"]}).encode()
+    request("POST", f"{QBIT['url']}/api/v2/auth/login",
+            {"Referer": QBIT["url"]}, body, opener, timeout=15)
+
+
+def _qbit_call(opener, method, path, body=None):
+    try:
+        return request(method, f"{QBIT['url']}{path}",
+                       {"Referer": QBIT["url"]}, body, opener)
+    except urllib.error.HTTPError as e:
+        if e.code != 403:
+            raise
+        _qbit_relogin(opener)
+        return request(method, f"{QBIT['url']}{path}",
+                       {"Referer": QBIT["url"]}, body, opener)
+
+
 def qbit_get(opener, path):
-    return json.load(request("GET", f"{QBIT['url']}{path}",
-                             {"Referer": QBIT["url"]}, None, opener))
+    return json.load(_qbit_call(opener, "GET", path))
 
 
 def qbit_post(opener, path, fields):
-    body = urllib.parse.urlencode(fields).encode()
-    return request("POST", f"{QBIT['url']}{path}",
-                   {"Referer": QBIT["url"]}, body, opener)
+    return _qbit_call(opener, "POST", path,
+                      urllib.parse.urlencode(fields).encode())
 
 
 # English-only audio. Language 1 = English in both Radarr and Sonarr.
@@ -270,6 +294,14 @@ def _rank(rel):
     return (_fallback_ok(rel) or (False,))[0], rel.get("qualityWeight") or 0, seeds
 
 
+def _arr_get_slow(arr, path):
+    # The fallback runs right after the wanted-search has queued a burst of
+    # searches, and a busy Sonarr took >60 s to answer /wanted/missing
+    # (2026-11-10 "Sonarr dual-audio fallback failed (timed out)").
+    return json.load(request("GET", f"{arr['url']}/api/v3{path}",
+                             {"X-Api-Key": arr["key"]}, timeout=240))
+
+
 def dual_audio_fallback():
     """Grab DUAL/English-dub releases for foreign-original titles that are
     otherwise un-downloadable under the English-only rule. See the constants."""
@@ -281,8 +313,8 @@ def dual_audio_fallback():
     # ── Sonarr ───────────────────────────────────────────────────────────────
     try:
         queued = {r.get("episodeId") for r in
-                  arr_get(SONARR, "/queue?pageSize=1000").get("records", [])}
-        w = arr_get(SONARR, "/wanted/missing?pageSize=500&monitored=true"
+                  _arr_get_slow(SONARR, "/queue?pageSize=1000").get("records", [])}
+        w = _arr_get_slow(SONARR, "/wanted/missing?pageSize=500&monitored=true"
                             "&includeSeries=true")
         groups = {}
         for e in w.get("records", []):
@@ -349,8 +381,8 @@ def dual_audio_fallback():
     # ── Radarr ───────────────────────────────────────────────────────────────
     try:
         queued = {r.get("movieId") for r in
-                  arr_get(RADARR, "/queue?pageSize=1000").get("records", [])}
-        w = arr_get(RADARR, "/wanted/missing?pageSize=500&monitored=true")
+                  _arr_get_slow(RADARR, "/queue?pageSize=1000").get("records", [])}
+        w = _arr_get_slow(RADARR, "/wanted/missing?pageSize=500&monitored=true")
         done = 0
         stuck = 0
         for m in w.get("records", []):
