@@ -15,6 +15,11 @@ PATH="/sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin:/usr/local/bin"
 export PATH
 
 ROOT="{{HOME}}"
+# Runs as root from root's crontab, but the dashboard's API keys live in the
+# desktop user's ~/.config/status-dashboard. status_keys.py (used by
+# media-heal.py and friends) reads DASHBOARD_HOME; without it they read
+# /root's empty copy and every Sonarr/Radarr step quietly SKIPped.
+export DASHBOARD_HOME="$ROOT"
 LOGDIR="$ROOT/.dbmedia/maintenance-logs"
 LOG="$LOGDIR/daily-routine-$(date +%Y%m%d-%H%M%S).log"
 mkdir -p "$LOGDIR"
@@ -335,6 +340,13 @@ if [ -x "$SEC" ]; then
     else "$SEC" --full 2>&1 | tee -a "$LOG"; fi
 else
     log "  [SKIP] security-check.sh not found"
+fi
+
+# Hourly (quick) too: fake "WEB-DL" torrents that are only an .exe should go
+# as soon as their metadata arrives, not at the next nightly run.
+if [ "$QUICK" = true ] && [ -x "$ROOT/.local/bin/media-heal.py" ]; then
+    banner "Fake-release (executable) scan"
+    "$ROOT/.local/bin/media-heal.py" exe 2>&1 | tee -a "$LOG"
 fi
 
 if [ "$QUICK" = true ]; then
