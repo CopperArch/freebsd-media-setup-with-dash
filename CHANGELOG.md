@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.19 - 2026-11-13
+- media-heal: fake-release purge, cam-tag markers, IMAX upgrades; nightly run gets the API keys (#26)
+
 ## 0.6.18 - 2026-11-12
 - Dashboard: AI off now reaches the desktop user's tmux panes (#25)
 
