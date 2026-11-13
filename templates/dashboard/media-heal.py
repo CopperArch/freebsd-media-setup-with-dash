@@ -16,8 +16,14 @@ Linux edition's media-stack-selfheal.py, 2026-11-05).
             comes back, libtorrent can stay bound to the dead tunnel (WebUI
             fine, 0 DHT nodes, every torrent stuck in metaDL). Re-setting
             the listen port makes it rebind.
+  exe       Fake-release scan: a torrent whose file list holds an executable
+            (.exe, .scr, .msi, ...) is removed and blocklisted through the
+            *arr queue so it searches again. Also runs hourly.
+  imax      IMAX upgrades: a few owned movies a night are searched for an
+            IMAX release, on Radarr profiles that upgrade to IMAX (custom-
+            format cutoff 100+). Nothing to do on a stock install.
 
-With no argument all three run. Jails are reached on their bastille0 IPs, API
+With no argument all of them run. Jails are reached on their bastille0 IPs, API
 keys come from ~/.config/status-dashboard/media-keys.env.
 """
 import json
@@ -120,6 +126,10 @@ _FOREIGN_MARKERS = [
     r"\b(turkish|greek|hebrew|thai|vietnamese|indonesian)\b",
     r"\b(hun|hungarian|cze|czech|slovak|romanian|bulgarian)\b",
     r"\b(por|portuguese|brazilian|dublat)\b", r"\b(esp|fra|ger|deu|rus|ita)\b",
+    # Paired dual-language cam tags like "CAM.1080p.IT.EN" / "AR.EN": Radarr
+    # parses them as English only, so they slipped through.
+    r"\b(it|ar|fr|es|de|ru|hi|tr|pl|pt|ua|ko|ja|zh|nl|sv|fa|ur)[\s._-]en\b",
+    r"\ben[\s._-](it|ar|fr|es|de|ru|hi|tr|pl|pt|ua|ko|ja|zh|nl|sv|fa|ur)\b",
 ]
 ENGLISH_ONLY_FORMATS = {
     "Not English": [{
@@ -138,18 +148,44 @@ ENGLISH_ONLY_FORMATS = {
 }
 
 
+def _spec_value(sp):
+    """The "value" field of a custom-format specification (regex, language id)."""
+    for f in sp.get("fields", []):
+        if f.get("name") == "value":
+            return f.get("value")
+    return None
+
+
 def reconcile_english_only(arr, name):
     """Ensure the English-only custom formats exist and are scored
     ENGLISH_ONLY_SCORE in every quality profile, so no release with a
     non-English audio track is ever grabbed."""
     hdr = {"X-Api-Key": arr["key"], "Content-Type": "application/json"}
     try:
-        cfs = {c["name"]: c["id"] for c in arr_get(arr, "/customformat")}
+        all_cfs = arr_get(arr, "/customformat")
+        cfs = {c["name"]: c["id"] for c in all_cfs}
+        full = {c["name"]: c for c in all_cfs}
     except Exception as e:
         log(f"[FAIL] {name}: can't read custom formats ({e})")
         return
     for fmt, specs in ENGLISH_ONLY_FORMATS.items():
         if fmt in cfs:
+            # Existing format: add any pattern added here since it was
+            # created (e.g. the paired cam tags "IT.EN"), or older installs
+            # never get them. Patterns a user added are left alone.
+            cur = full[fmt]
+            have = {(sp.get("implementation"), _spec_value(sp))
+                    for sp in cur.get("specifications", [])}
+            add = [sp for sp in specs
+                   if (sp["implementation"], _spec_value(sp)) not in have]
+            if add:
+                cur["specifications"] = cur.get("specifications", []) + add
+                try:
+                    request("PUT", f"{arr['url']}/api/v3/customformat/{cur['id']}",
+                            hdr, json.dumps(cur).encode())
+                    log(f"[FIX ] {name}: added {len(add)} new pattern(s) to '{fmt}'")
+                except Exception as e:
+                    log(f"[WARN] {name}: could not update '{fmt}' ({e})")
             continue
         try:
             cf = json.load(request(
@@ -204,6 +240,14 @@ DUAL_FALLBACK_BATCH = 3          # interactive searches per *arr per run
 DUAL_FALLBACK_RETRY_DAYS = 3
 WANTED_STATE = os.path.expanduser("~/.local/state/media-heal-dual.json")
 
+# Owned movies are re-searched for an IMAX release in small nightly batches
+# (Radarr only sees upgrades on RSS, and old IMAX releases never reappear
+# there). Only profiles that allow upgrades AND have a custom-format cutoff of
+# 100+ (an "IMAX" format scored +100) take part, so on a stock install this
+# does nothing. 10/night with a 30-day per-movie cooldown.
+IMAX_UPGRADE_BATCH = 10
+IMAX_RETRY_DAYS = 30
+
 
 def _wanted_state():
     try:
@@ -214,8 +258,12 @@ def _wanted_state():
 
 
 def _save_wanted_state(st):
-    cutoff = time.time() - DUAL_FALLBACK_RETRY_DAYS * 86400
-    st = {k: v for k, v in st.items() if v > cutoff}
+    def ttl(k):
+        if k.startswith("radarr-imax:"):
+            return IMAX_RETRY_DAYS * 86400
+        return DUAL_FALLBACK_RETRY_DAYS * 86400
+    now = time.time()
+    st = {k: v for k, v in st.items() if v > now - ttl(k)}
     try:
         os.makedirs(os.path.dirname(WANTED_STATE), exist_ok=True)
         with open(WANTED_STATE, "w") as fh:
@@ -434,6 +482,124 @@ def dual_audio_fallback():
 
 
 
+EXEC_FILE_RE = re.compile(
+    r"(?i)\.(exe|scr|bat|cmd|com|pif|vbs|vbe|js|jse|wsf|msi|ps1|lnk)$")
+
+
+def purge_executable_torrents(opener):
+    """Remove + blocklist any torrent whose file list contains an executable.
+
+    Some indexers strip punctuation from release names ("...WEB DL ... FLUX"),
+    so the *arr title filter never sees the ".exe" -- it only shows up in the
+    torrent's own file list. These fakes appear before a film's digital
+    release. Removing the torrent through the *arr queue blocklists it and
+    lets the *arr search again for a genuine release. The torrent's hash is
+    looked up in both queues, so it works whatever categories are set up.
+    """
+    log("Executable (fake release) scan:")
+    try:
+        torrents = qbit_get(opener, "/api/v2/torrents/info")
+    except Exception as e:
+        log(f"  [WARN] can't list torrents for executable scan: {e}")
+        return
+    hits = []
+    for t in torrents:
+        if t.get("state") in ("metaDL", "forcedMetaDL"):
+            continue
+        try:
+            files = qbit_get(opener, f"/api/v2/torrents/files?hash={t['hash']}")
+        except Exception:
+            continue
+        bad = [f["name"] for f in files if EXEC_FILE_RE.search(f.get("name", ""))]
+        if bad:
+            hits.append((t, bad))
+    if not hits:
+        log("  [OK]   no executables in any torrent")
+        return
+    queues = []
+    for arr, name in ((RADARR, "Radarr"), (SONARR, "Sonarr")):
+        if not arr["key"]:
+            continue
+        try:
+            queues.append((arr, name, arr_get(arr, "/queue?pageSize=500")
+                           .get("records", [])))
+        except Exception as e:
+            log(f"  [WARN] {name}: can't read queue ({e})")
+    for t, bad in hits:
+        removed_via_arr = False
+        for arr, name, recs in queues:
+            rec = next((r for r in recs if (r.get("downloadId") or "").lower()
+                        == t["hash"].lower()), None)
+            if not rec:
+                continue
+            try:
+                request("DELETE", f"{arr['url']}/api/v3/queue/{rec['id']}"
+                        "?removeFromClient=true&blocklist=true&skipRedownload=false",
+                        {"X-Api-Key": arr["key"]})
+                removed_via_arr = True
+            except Exception as e:
+                log(f"  [WARN] {name}: couldn't blocklist {t['name']}: {e}")
+            break
+        if not removed_via_arr:
+            qbit_post(opener, "/api/v2/torrents/delete",
+                      {"hashes": t["hash"], "deleteFiles": "true"})
+        how = ("removed + blocklisted, re-search queued" if removed_via_arr
+               else "deleted from qBittorrent")
+        log(f"  [FIX ] MALWARE torrent {t['name']!r} contained {bad[:3]} -- {how}")
+        alert(f"Malware torrent caught: {t['name']} contained executable(s) "
+              f"{', '.join(bad[:3])}. {how}.")
+
+
+def imax_upgrade_trickle():
+    """Search a few owned movies a night for an IMAX release (see constants).
+
+    Radarr's /wanted/cutoff only judges the QUALITY cutoff, not the custom-
+    format one, so build the list here: owned, monitored, on an upgrade
+    profile with a custom-format cutoff of 100+, current file not IMAX."""
+    log("IMAX upgrades:")
+    try:
+        profiles = {p["id"] for p in arr_get(RADARR, "/qualityprofile")
+                    if p.get("upgradeAllowed")
+                    and (p.get("cutoffFormatScore") or 0) >= 100}
+        if not profiles:
+            log("  [OK]   no Radarr profile upgrades to IMAX -- nothing to do")
+            return
+        imax_re = re.compile(r"\bIMAX\b", re.I)
+        cands = []
+        for m in _arr_get_slow(RADARR, "/movie"):
+            mf = m.get("movieFile") or {}
+            if not (m.get("hasFile") and m.get("monitored")
+                    and m.get("qualityProfileId") in profiles):
+                continue
+            if imax_re.search(f"{mf.get('relativePath', '')} {mf.get('sceneName') or ''}"):
+                continue
+            cands.append(m)
+        st, now, out = _wanted_state(), time.time(), []
+        for m in cands:
+            if len(out) >= IMAX_UPGRADE_BATCH:
+                break
+            key = f"radarr-imax:{m['id']}"
+            if now - st.get(key, 0) < IMAX_RETRY_DAYS * 86400:
+                continue
+            st[key] = now
+            out.append(m)
+        if out:
+            request("POST", f"{RADARR['url']}/api/v3/command",
+                    {"X-Api-Key": RADARR["key"], "Content-Type": "application/json"},
+                    json.dumps({"name": "MoviesSearch",
+                                "movieIds": [m["id"] for m in out]}).encode())
+            _save_wanted_state(st)
+            log(f"  [OK]   IMAX-upgrade search for {len(out)} owned movie(s) "
+                f"({len(cands)} without IMAX): "
+                + ", ".join(m["title"][:24] for m in out[:5])
+                + (" ..." if len(out) > 5 else ""))
+        else:
+            log(f"  [OK]   IMAX-upgrade batch idle ({len(cands)} without IMAX, "
+                "all on cooldown)")
+    except Exception as e:
+        log(f"  [WARN] Radarr IMAX-upgrade search failed ({e})")
+
+
 def qbit_peer_health(opener):
     """Make sure qBittorrent can actually reach peers, not just that it's up.
 
@@ -488,13 +654,21 @@ def qbit_peer_health(opener):
 
 
 def main():
-    what = sys.argv[1:] or ["english", "qbit", "dual"]
+    # exe also runs hourly (daily-routine.sh --quick); the rest nightly.
+    what = sys.argv[1:] or ["english", "qbit", "exe", "dual", "imax"]
     jails = installed_jails(["qbittorrent", "sonarr", "radarr"])
     if "qbit" in what:
         if "qbittorrent" in jails:
             o = qbit_login()
             if o:
                 qbit_peer_health(o)
+        else:
+            log("[SKIP] no qbittorrent jail")
+    if "exe" in what:
+        if "qbittorrent" in jails:
+            o = qbit_login()
+            if o:
+                purge_executable_torrents(o)
         else:
             log("[SKIP] no qbittorrent jail")
     if "english" in what:
@@ -514,6 +688,11 @@ def main():
         else:
             log("[SKIP] dual-audio fallback needs both sonarr and radarr "
                 "jails with API keys")
+    if "imax" in what:
+        if "radarr" in jails and RADARR["key"]:
+            imax_upgrade_trickle()
+        else:
+            log("[SKIP] IMAX upgrades need the radarr jail with an API key")
 
 
 if __name__ == "__main__":
