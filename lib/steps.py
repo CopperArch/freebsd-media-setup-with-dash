@@ -75,7 +75,8 @@ def check_freebsd(ctx: Ctx, accept) -> tuple[bool, str]:
 def install_host_packages(ctx: Ctx, accept) -> tuple[bool, str]:
     need = ["python3", "git", "curl", "jq", "bastille"]
     if ctx.profile.use_daily_routine:
-        need += ["smartmontools", "rsync", "clamav", "chkrootkit"]
+        need += ["smartmontools", "rsync", "clamav", "chkrootkit",
+                 "ffmpeg", "dejavu"]
     if ctx.profile.use_dashboard:
         need += ["tkinter", "librewolf"]
     if ctx.profile.use_vpn_stack:

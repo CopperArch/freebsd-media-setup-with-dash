@@ -46,6 +46,8 @@ class Platform:
         "smartmontools": "smartmontools",
         "clamav":        "clamav",        # intrusion-check.py malware scan
         "chkrootkit":    "chkrootkit",    # intrusion-check.py rootkit scan
+        "ffmpeg":        "ffmpeg",        # media-heal.py Jellyfin poster badges
+        "dejavu":        "dejavu",        # font for those badges
         "htop":          "htop",
         "ncdu":          "ncdu",
         "rsync":         "rsync",
