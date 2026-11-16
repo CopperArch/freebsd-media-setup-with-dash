@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.20 - 2026-11-16
+- qBittorrent peer check: restart DHT on heal, one alert per outage (#27)
+
 ## 0.6.19 - 2026-11-13
 - media-heal: fake-release purge, cam-tag markers, IMAX upgrades; nightly run gets the API keys (#26)
 
