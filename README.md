@@ -232,7 +232,8 @@ shown as "Custom VPN".
    stuck (one alert per outage, one on recovery), burns badges into
    Jellyfin posters so TV apps show them too (a red **CAM** tag on
    cam/telesync early releases, removed once Radarr upgrades the file,
-   and a yellow ★ with the IMDb rating on every movie and series), and keeps
+   and a yellow ★ with the IMDb rating on every movie, series and season),
+   and keeps
    every Sonarr/Radarr profile English-only (any release with a non-English
    audio track is rejected; a foreign-original title still missing 6 hours
    after it was added or aired falls back to its best DUAL/English-dub

@@ -728,7 +728,10 @@ POSTER_STATE_DIR = os.path.join(
 IMDB_RATINGS_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
 IMDB_RATINGS_FILE = os.path.join(POSTER_STATE_DIR, "title.ratings.tsv.gz")
 IMDB_MIN_VOTES = 10
-BADGE_TYPES = ("Movie", "Series")
+# Bump when the badge layout changes: every badged poster is redrawn once.
+BADGE_STYLE = 3
+# Seasons carry their show rating (IMDb rates shows, not seasons).
+BADGE_TYPES = ("Movie", "Series", "Season")
 
 
 def _badge_font():
@@ -761,6 +764,8 @@ def _render_badges(src, dst, cam, rating, font):
               f"drawtext=fontfile={font}:text=CAM:fontcolor=white:"
               "fontsize=w*0.105:x=w*0.04+(w*0.36-tw)/2:y=w*0.04+(w*0.15-th)/2"]
     if rating:
+        # Bottom-left (user's choice, 2026-11-16; a top-left layout was tried
+        # and dropped -- TV apps do show the bottom badge).
         top = "h-w*0.04-w*0.13+(w*0.13-th)/2"
         f += ["drawbox=x=iw*0.04:y=ih-iw*0.17:w=iw*0.30:h=iw*0.13:"
               "color=black@0.72:t=fill",
@@ -843,8 +848,30 @@ def poster_badges():
         # No Radarr: rating badges still work; CAM badges stay as they are.
         log(f"[WARN] can't read Radarr ({e}); CAM badges unchanged")
         cam = None
-    ratings = _imdb_ratings({(i.get("ProviderIds") or {}).get("Imdb")
-                             for i in items.values()} - {None})
+    # IMDb id: Jellyfin's own, else the one Radarr/Sonarr hold for the same
+    # TMDb/TVDb id (Jellyfin had none for e.g. "Monster: The Ed Gein Story").
+    arr_imdb = {}
+    for arr, path, keys in ((RADARR, "/movie", ("tmdbId",)),
+                            (SONARR, "/series", ("tvdbId", "tmdbId"))):
+        try:
+            for r in arr_get(arr, path):
+                if r.get("imdbId"):
+                    for k in keys:
+                        if r.get(k):
+                            arr_imdb[(k, str(r[k]))] = r["imdbId"]
+        except Exception:
+            pass
+
+    def imdb_id(i):
+        p = i.get("ProviderIds") or {}
+        if p.get("Imdb"):
+            return p["Imdb"]
+        if i.get("Type") == "Movie":
+            return arr_imdb.get(("tmdbId", str(p.get("Tmdb"))))
+        return (arr_imdb.get(("tvdbId", str(p.get("Tvdb"))))
+                or arr_imdb.get(("tmdbId", str(p.get("Tmdb")))))
+
+    ratings = _imdb_ratings({imdb_id(i) for i in items.values()} - {None})
     if not ratings:
         log("[WARN] no IMDb ratings available; leaving rating badges as they are")
 
@@ -866,7 +893,11 @@ def poster_badges():
         else:
             is_cam = (i.get("Type") == "Movie" and str(tm or "").isdigit()
                       and int(tm) in cam)
-        r = ratings.get(p.get("Imdb")) if ratings else None
+        if i.get("Type") == "Season":
+            show = items.get(i.get("SeriesId") or i.get("ParentId"))
+            r = ratings.get(imdb_id(show)) if ratings and show else None
+        else:
+            r = ratings.get(imdb_id(i)) if ratings else None
         return {"cam": is_cam, "rating": r}
 
     def upload(iid, path):
@@ -893,7 +924,8 @@ def poster_badges():
         if not ratings and meta.get("rating"):
             w["rating"] = meta["rating"]       # dataset missing: keep as is
         ours = meta.get("tag") == tag
-        if ours and meta.get("cam") == w["cam"] and meta.get("rating") == w["rating"]:
+        if (ours and meta.get("cam") == w["cam"] and meta.get("rating") == w["rating"]
+                and meta.get("style") == BADGE_STYLE):
             continue
         if not ours and not (w["cam"] or w["rating"]):
             continue                            # untouched poster, nothing wanted
@@ -912,7 +944,8 @@ def poster_badges():
                 finally:
                     if os.path.exists(out):
                         os.remove(out)
-                json.dump({"tag": new_tag, "name": item.get("Name"), **w},
+                json.dump({"tag": new_tag, "name": item.get("Name"),
+                           "style": BADGE_STYLE, **w},
                           open(meta_p, "w"))
                 done["badged"] += 1
                 if bool(meta.get("cam")) != w["cam"] and item.get("Type") == "Movie":
