@@ -26,9 +26,12 @@ Linux edition's media-stack-selfheal.py, 2026-11-05).
 With no argument all of them run. Jails are reached on their bastille0 IPs, API
 keys come from ~/.config/status-dashboard/media-keys.env.
 """
+import base64
 import json
 import os
 import re
+import subprocess
+import shutil
 import sys
 import time
 import urllib.parse
@@ -43,6 +46,7 @@ QBIT = {"url": f"http://{jail_ip('qbittorrent')}:8080",
         "user": KEYS.get("QBIT_USER", "admin"), "pass": KEYS.get("QBIT_PASS", "")}
 RADARR = {"url": f"http://{jail_ip('radarr')}:7878", "key": KEYS.get("RADARR_KEY", "")}
 SONARR = {"url": f"http://{jail_ip('sonarr')}:8989", "key": KEYS.get("SONARR_KEY", "")}
+JELLYFIN = {"url": f"http://{jail_ip('jellyfin')}:8096", "key": KEYS.get("JELLYFIN_KEY", "")}
 
 
 def log(msg):
@@ -63,6 +67,20 @@ def request(method, url, headers=None, data=None, opener=None, timeout=60):
 def arr_get(arr, path):
     return json.load(request("GET", f"{arr['url']}/api/v3{path}",
                              {"X-Api-Key": arr["key"]}))
+
+
+def jf_request(method, path, headers=None, body=None):
+    h = {"Authorization": f'MediaBrowser Token="{JELLYFIN['key']}"'}
+    h.update(headers or {})
+    return request(method, f"{JELLYFIN['url']}{path}", h, body)
+
+
+def jf_items(itemtype, fields=""):
+    f = f"&Fields={fields}" if fields else ""
+    items = json.load(jf_request(
+        "GET", f"/Items?Recursive=true&IncludeItemTypes={itemtype}"
+               f"&CollapseBoxSetItems=false&Limit=30000{f}")).get("Items", [])
+    return [i for i in items if i.get("Type") == itemtype]
 
 
 def qbit_login():
@@ -689,9 +707,254 @@ def qbit_peer_health(opener):
     return False
 
 
+# 2026-11-16 (user: "on jellyfin ... Cam on the early release ... once it
+# updates it removes the cam on the thumbnail", then "add the imdb score at
+# the bottom ... yellow star ... so it will show on tv versions of jellyfin").
+# Both are burned into the poster image itself so every client (TV apps
+# included, which can't run injected JS) shows them.
+#   * CAM tag (top-left, red) on movies whose Radarr file is a CAM/TS-class
+#     quality. Radarr's quality is the truth: filenames say "TS", "camrip",
+#     "CAM.1080p" inconsistently.
+#   * IMDb rating (bottom-left, yellow star) on every movie and series, from
+#     IMDb's free daily title.ratings dataset matched on the Jellyfin IMDb id.
+CAM_QUALITIES = {"CAM", "TELESYNC", "TELECINE", "WORKPRINT", "DVDSCR",
+                 "REGIONAL"}
+# Under DASHBOARD_HOME: the nightly/hourly routine runs this as root, a manual
+# run is the desktop user, and both must share one state dir or a poster whose
+# state is missing would be taken as "clean" and badged twice.
+POSTER_STATE_DIR = os.path.join(
+    os.environ.get("DASHBOARD_HOME") or os.path.expanduser("~"),
+    ".local/state/poster-badges")
+IMDB_RATINGS_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
+IMDB_RATINGS_FILE = os.path.join(POSTER_STATE_DIR, "title.ratings.tsv.gz")
+IMDB_MIN_VOTES = 10
+BADGE_TYPES = ("Movie", "Series")
+
+
+def _badge_font():
+    """A bold TTF for ffmpeg drawtext (DejaVu has the star glyph)."""
+    for f in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+              "/usr/local/share/fonts/dejavu/DejaVuSans-Bold.ttf"):
+        if os.path.exists(f):
+            return f
+    try:
+        f = subprocess.run(["fc-match", "-f", "%{file}", "DejaVu Sans:bold"],
+                           capture_output=True, text=True, timeout=10).stdout
+        return f if f and os.path.exists(f) else None
+    except Exception:
+        return None
+
+
+def _render_badges(src, dst, cam, rating, font):
+    """Burn the wanted badges into a poster with ffmpeg."""
+    f = []
+    if cam:
+        f += ["drawbox=x=iw*0.05:y=iw*0.05:w=iw*0.36:h=iw*0.15:"
+              "color=black@0.45:t=fill",
+              "drawbox=x=iw*0.04:y=iw*0.04:w=iw*0.36:h=iw*0.15:"
+              "color=0xE50914@1:t=fill",
+              "drawbox=x=iw*0.04:y=iw*0.04:w=iw*0.36:h=iw*0.15:"
+              "color=white@0.9:t=max(2\\,iw*0.006)",
+              f"drawtext=fontfile={font}:text=CAM:fontcolor=white:"
+              "fontsize=w*0.105:x=w*0.04+(w*0.36-tw)/2:y=w*0.04+(w*0.15-th)/2"]
+    if rating:
+        top = "h-w*0.04-w*0.13+(w*0.13-th)/2"
+        f += ["drawbox=x=iw*0.04:y=ih-iw*0.17:w=iw*0.30:h=iw*0.13:"
+              "color=black@0.72:t=fill",
+              f"drawtext=fontfile={font}:text='★':fontcolor=0xF5C518:"
+              f"fontsize=w*0.095:x=w*0.065:y={top}",
+              f"drawtext=fontfile={font}:text='{rating}':fontcolor=white:"
+              f"fontsize=w*0.085:x=w*0.17:y={top}"]
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", src, "-vf", ",".join(f), "-q:v", "3",
+                    "-frames:v", "1", dst], check=True, timeout=60)
+
+
+def _imdb_ratings(wanted):
+    """{tconst: "7.4"} for the ids in `wanted`, from IMDb's daily dataset
+    (re-downloaded when older than 20h; a stale copy is used if that fails)."""
+    import gzip
+    fresh = (os.path.exists(IMDB_RATINGS_FILE) and
+             time.time() - os.path.getmtime(IMDB_RATINGS_FILE) < 20 * 3600)
+    if not fresh:
+        try:
+            req = urllib.request.Request(IMDB_RATINGS_URL,
+                                         headers={"User-Agent": "media-stack-selfheal"})
+            data = urllib.request.urlopen(req, timeout=120).read()
+            tmp = IMDB_RATINGS_FILE + ".part"
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, IMDB_RATINGS_FILE)
+        except Exception as e:
+            log(f"[WARN] IMDb ratings download failed ({e})"
+                + ("; using the previous copy" if os.path.exists(IMDB_RATINGS_FILE) else ""))
+    out = {}
+    if not os.path.exists(IMDB_RATINGS_FILE):
+        return out
+    with gzip.open(IMDB_RATINGS_FILE, "rt", encoding="utf-8") as f:
+        next(f, None)
+        for line in f:
+            t, avg, votes = line.rstrip("\n").split("\t")
+            if t in wanted and int(votes) >= IMDB_MIN_VOTES:
+                out[t] = f"{float(avg):.1f}"
+    return out
+
+
+def poster_badges():
+    """Keep Jellyfin posters wearing the right CAM / IMDb-rating badges.
+
+    The clean poster is kept once in POSTER_STATE_DIR/<id>.jpg; the badged
+    copy is always rendered from it, so badges never stack. <id>.json holds
+    the ImageTag of our upload and the badges it carries. Badges are redrawn
+    when they should change (CAM upgraded away, rating moved); a poster with
+    no badges wanted gets its original back. If Jellyfin replaced our poster
+    itself (new ImageTag), the new image becomes the clean original.
+    """
+    log("Poster badges (CAM early releases + IMDb rating):")
+    os.makedirs(POSTER_STATE_DIR, exist_ok=True)
+    import fcntl
+    lock = open(os.path.join(POSTER_STATE_DIR, ".lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("[SKIP] another poster-badge run is in progress")
+        return
+    if not JELLYFIN["key"]:
+        log("[SKIP] no JELLYFIN_KEY in media-keys.env")
+        return
+    font = _badge_font()
+    if not font or not shutil.which("ffmpeg"):
+        log("[SKIP] needs ffmpeg and a DejaVu Sans Bold font")
+        return
+    try:
+        items = {i["Id"]: i for t in BADGE_TYPES
+                 for i in jf_items(t, "ProviderIds")}
+    except Exception as e:
+        log(f"[FAIL] can't read Jellyfin ({e})")
+        return
+    try:
+        cam = {m["tmdbId"] for m in arr_get(RADARR, "/movie")
+               if (((m.get("movieFile") or {}).get("quality") or {})
+                   .get("quality") or {}).get("name") in CAM_QUALITIES}
+    except Exception as e:
+        # No Radarr: rating badges still work; CAM badges stay as they are.
+        log(f"[WARN] can't read Radarr ({e}); CAM badges unchanged")
+        cam = None
+    ratings = _imdb_ratings({(i.get("ProviderIds") or {}).get("Imdb")
+                             for i in items.values()} - {None})
+    if not ratings:
+        log("[WARN] no IMDb ratings available; leaving rating badges as they are")
+
+    state_cam = {}
+    if cam is None:
+        for fn in os.listdir(POSTER_STATE_DIR):
+            if fn.endswith(".json"):
+                try:
+                    state_cam[fn[:-5]] = json.load(
+                        open(os.path.join(POSTER_STATE_DIR, fn))).get("cam")
+                except ValueError:
+                    pass
+
+    def want(i):
+        p = i.get("ProviderIds") or {}
+        tm = p.get("Tmdb")
+        if cam is None:
+            is_cam = bool(state_cam.get(i["Id"]))
+        else:
+            is_cam = (i.get("Type") == "Movie" and str(tm or "").isdigit()
+                      and int(tm) in cam)
+        r = ratings.get(p.get("Imdb")) if ratings else None
+        return {"cam": is_cam, "rating": r}
+
+    def upload(iid, path):
+        with open(path, "rb") as f:
+            jf_request("POST", f"/Items/{iid}/Images/Primary",
+                       {"Content-Type": "image/jpeg"}, base64.b64encode(f.read()))
+        got = json.load(jf_request("GET", f"/Items?Ids={iid}&Fields=ImageTags"))
+        return ((got.get("Items") or [{}])[0].get("ImageTags") or {}).get("Primary")
+
+    done = {"badged": 0, "restored": 0, "failed": 0}
+    for iid, item in items.items():
+        tag = (item.get("ImageTags") or {}).get("Primary")
+        if not tag:
+            continue
+        meta_p = os.path.join(POSTER_STATE_DIR, iid + ".json")
+        orig = os.path.join(POSTER_STATE_DIR, iid + ".jpg")
+        meta = {}
+        if os.path.exists(meta_p):
+            try:
+                meta = json.load(open(meta_p))
+            except ValueError:
+                meta = {}
+        w = want(item)
+        if not ratings and meta.get("rating"):
+            w["rating"] = meta["rating"]       # dataset missing: keep as is
+        ours = meta.get("tag") == tag
+        if ours and meta.get("cam") == w["cam"] and meta.get("rating") == w["rating"]:
+            continue
+        if not ours and not (w["cam"] or w["rating"]):
+            continue                            # untouched poster, nothing wanted
+        try:
+            if not ours or not os.path.exists(orig):
+                # current image is clean (new item, or Jellyfin replaced ours)
+                img = jf_request("GET", f"/Items/{iid}/Images/Primary"
+                                        "?maxWidth=1000&quality=92&format=Jpg").read()
+                with open(orig, "wb") as f:
+                    f.write(img)
+            if w["cam"] or w["rating"]:
+                out = os.path.join(POSTER_STATE_DIR, iid + ".badged.jpg")
+                try:
+                    _render_badges(orig, out, w["cam"], w["rating"], font)
+                    new_tag = upload(iid, out)
+                finally:
+                    if os.path.exists(out):
+                        os.remove(out)
+                json.dump({"tag": new_tag, "name": item.get("Name"), **w},
+                          open(meta_p, "w"))
+                done["badged"] += 1
+                if bool(meta.get("cam")) != w["cam"] and item.get("Type") == "Movie":
+                    log(f"[FIX ] {item.get('Name')}: CAM badge "
+                        + ("added" if w["cam"] else "removed (upgraded)"))
+            else:
+                upload(iid, orig)
+                for p in (meta_p, orig):
+                    os.remove(p)
+                done["restored"] += 1
+                if meta.get("cam"):
+                    log(f"[FIX ] {item.get('Name')}: upgraded from CAM, "
+                        "original poster restored")
+        except Exception as e:
+            done["failed"] += 1
+            if done["failed"] <= 5:
+                log(f"[WARN] couldn't badge {item.get('Name')} ({e})")
+    log(f"[OK]   {len(items)} poster(s) checked: {done['badged']} redrawn, "
+        f"{done['restored']} restored, {done['failed']} failed; "
+        f"{len(cam) if cam is not None else '?'} CAM movie(s), {len(ratings)} with an IMDb rating")
+
+
+def _give_state_to_owner():
+    """Run as root (the routine): hand the badge state back to the owner of
+    DASHBOARD_HOME so the desktop user's own runs can still write it."""
+    home = os.environ.get("DASHBOARD_HOME")
+    if os.geteuid() != 0 or not home or not os.path.isdir(POSTER_STATE_DIR):
+        return
+    st = os.stat(home)
+    paths = [os.path.dirname(POSTER_STATE_DIR), POSTER_STATE_DIR]
+    paths += [os.path.join(POSTER_STATE_DIR, n) for n in os.listdir(POSTER_STATE_DIR)]
+    for p in paths:
+        try:
+            if os.stat(p).st_uid == 0:
+                os.chown(p, st.st_uid, st.st_gid)
+        except OSError:
+            pass
+
+
 def main():
-    # exe also runs hourly (daily-routine.sh --quick); the rest nightly.
-    what = sys.argv[1:] or ["english", "qbit", "exe", "dual", "imax"]
+    # exe + badges also run hourly (daily-routine.sh --quick); the rest nightly.
+    what = sys.argv[1:] or ["english", "qbit", "exe", "dual", "imax", "badges"]
     jails = installed_jails(["qbittorrent", "sonarr", "radarr"])
     if "qbit" in what:
         if "qbittorrent" in jails:
@@ -729,6 +992,16 @@ def main():
             imax_upgrade_trickle()
         else:
             log("[SKIP] IMAX upgrades need the radarr jail with an API key")
+    if "badges" in what:
+        # Poster badges (CAM + IMDb rating); also hourly from --quick so an
+        # upgraded movie loses its CAM tag within the hour.
+        if "jellyfin" in installed_jails(["jellyfin"]):
+            try:
+                poster_badges()
+            finally:
+                _give_state_to_owner()
+        else:
+            log("[SKIP] poster badges need the jellyfin jail")
 
 
 if __name__ == "__main__":

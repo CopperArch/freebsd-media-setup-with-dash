@@ -347,6 +347,9 @@ fi
 if [ "$QUICK" = true ] && [ -x "$ROOT/.local/bin/media-heal.py" ]; then
     banner "Fake-release (executable) scan"
     "$ROOT/.local/bin/media-heal.py" exe 2>&1 | tee -a "$LOG"
+    # Jellyfin poster badges: CAM tag off within the hour of an upgrade.
+    banner "Poster badges (CAM + IMDb rating)"
+    "$ROOT/.local/bin/media-heal.py" badges 2>&1 | tee -a "$LOG"
 fi
 
 if [ "$QUICK" = true ]; then
