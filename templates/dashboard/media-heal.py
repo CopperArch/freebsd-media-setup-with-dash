@@ -728,6 +728,8 @@ POSTER_STATE_DIR = os.path.join(
 IMDB_RATINGS_URL = "https://datasets.imdbws.com/title.ratings.tsv.gz"
 IMDB_RATINGS_FILE = os.path.join(POSTER_STATE_DIR, "title.ratings.tsv.gz")
 IMDB_MIN_VOTES = 10
+# Bump when the badge layout changes: every badged poster is redrawn once.
+BADGE_STYLE = 2
 BADGE_TYPES = ("Movie", "Series")
 
 
@@ -761,13 +763,18 @@ def _render_badges(src, dst, cam, rating, font):
               f"drawtext=fontfile={font}:text=CAM:fontcolor=white:"
               "fontsize=w*0.105:x=w*0.04+(w*0.36-tw)/2:y=w*0.04+(w*0.15-th)/2"]
     if rating:
-        top = "h-w*0.04-w*0.13+(w*0.13-th)/2"
-        f += ["drawbox=x=iw*0.04:y=ih-iw*0.17:w=iw*0.30:h=iw*0.13:"
+        # Top-left (under the CAM tag when there is one), not the bottom: TV
+        # apps (Jellyfin Android TV, Wholphin) cover the bottom strip of a
+        # poster card with the title/progress overlay, so a bottom badge was
+        # invisible there while the CAM tag at the top showed (2026-11-16).
+        by = "iw*0.215" if cam else "iw*0.04"
+        ty = ("w*0.215" if cam else "w*0.04") + "+(w*0.13-th)/2"
+        f += [f"drawbox=x=iw*0.04:y={by}:w=iw*0.30:h=iw*0.13:"
               "color=black@0.72:t=fill",
               f"drawtext=fontfile={font}:text='★':fontcolor=0xF5C518:"
-              f"fontsize=w*0.095:x=w*0.065:y={top}",
+              f"fontsize=w*0.095:x=w*0.065:y={ty}",
               f"drawtext=fontfile={font}:text='{rating}':fontcolor=white:"
-              f"fontsize=w*0.085:x=w*0.17:y={top}"]
+              f"fontsize=w*0.085:x=w*0.17:y={ty}"]
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                     "-i", src, "-vf", ",".join(f), "-q:v", "3",
                     "-frames:v", "1", dst], check=True, timeout=60)
@@ -893,7 +900,8 @@ def poster_badges():
         if not ratings and meta.get("rating"):
             w["rating"] = meta["rating"]       # dataset missing: keep as is
         ours = meta.get("tag") == tag
-        if ours and meta.get("cam") == w["cam"] and meta.get("rating") == w["rating"]:
+        if (ours and meta.get("cam") == w["cam"] and meta.get("rating") == w["rating"]
+                and meta.get("style") == BADGE_STYLE):
             continue
         if not ours and not (w["cam"] or w["rating"]):
             continue                            # untouched poster, nothing wanted
@@ -912,7 +920,8 @@ def poster_badges():
                 finally:
                     if os.path.exists(out):
                         os.remove(out)
-                json.dump({"tag": new_tag, "name": item.get("Name"), **w},
+                json.dump({"tag": new_tag, "name": item.get("Name"),
+                           "style": BADGE_STYLE, **w},
                           open(meta_p, "w"))
                 done["badged"] += 1
                 if bool(meta.get("cam")) != w["cam"] and item.get("Type") == "Movie":
