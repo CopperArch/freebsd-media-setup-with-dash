@@ -227,8 +227,9 @@ shown as "Custom VPN".
    re-asserts the pf kill-switch, then `pkg upgrade` per jail behind a ZFS
    snapshot with **verify + auto-rollback**, host `pkg` + `freebsd-update`
    (rebooting at the very end when that installed a new kernel), and log
-   pruning. `media-heal.py` makes qBittorrent rebind its port when a vpn
-   reconnect leaves it with 0 DHT nodes and every torrent stuck, and keeps
+   pruning. `media-heal.py` makes qBittorrent rebind its port and restart
+   its DHT when a vpn reconnect leaves it with 0 DHT nodes and every torrent
+   stuck (one alert per outage, one on recovery), and keeps
    every Sonarr/Radarr profile English-only (any release with a non-English
    audio track is rejected; a foreign-original title still missing 6 hours
    after it was added or aired falls back to its best DUAL/English-dub

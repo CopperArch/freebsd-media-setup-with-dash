@@ -623,21 +623,47 @@ def qbit_peer_health(opener):
         log(f"[FAIL] can't read qBittorrent status: {e}")
         alert(f"qBittorrent API not answering: {e}")
         return False
+    # 2026-11-16: debounce flag -- a persistent fault used to send one email
+    # every hour. Now: one "can't reach peers" mail per outage, one on recovery.
+    down_flag = os.path.expanduser("~/.local/state/qbit-peers-down.flag")
+    was_down = os.path.exists(down_flag)
+
+    def recovered():
+        if was_down:
+            try:
+                os.remove(down_flag)
+            except OSError:
+                pass
+            alert(f"qBittorrent peer connectivity recovered "
+                  f"(connection={conn}, DHT nodes={dht})")
+
     dht_on = prefs.get("dht", False)
     healthy = conn != "disconnected" and (dht > 0 or not dht_on)
     if healthy:
         log(f"[OK]   connection={conn}, DHT nodes={dht}")
+        recovered()
         return True
     port = prefs.get("listen_port", 6881)
     for attempt in range(2):
+        # 2026-11-16: after a failed vpn handshake (tunnel down ~75s) libtorrent's
+        # DHT stopped bootstrapping for good: sockets rebound fine on the new
+        # tunnel IP but DHT stayed at 0 nodes for hours of hourly rebinds.
+        # Toggling DHT off/on restarts the DHT node; it re-bootstraps in ~20s.
         log(f"[FIX ] connection={conn}, DHT nodes={dht} — rebinding listen "
-            f"port {port} (attempt {attempt + 1})")
+            f"port {port} + restarting DHT (attempt {attempt + 1})")
         try:
             qbit_post(opener, "/api/v2/app/setPreferences",
                       {"json": json.dumps({"listen_port": port + 1})})
             time.sleep(3)
             qbit_post(opener, "/api/v2/app/setPreferences",
                       {"json": json.dumps({"listen_port": port})})
+            if dht_on:
+                time.sleep(3)
+                qbit_post(opener, "/api/v2/app/setPreferences",
+                          {"json": json.dumps({"dht": False})})
+                time.sleep(3)
+                qbit_post(opener, "/api/v2/app/setPreferences",
+                          {"json": json.dumps({"dht": True})})
             time.sleep(60)
             conn, dht = state()
         except Exception as e:
@@ -645,11 +671,21 @@ def qbit_peer_health(opener):
             continue
         if conn != "disconnected" and (dht > 0 or not dht_on):
             log(f"[OK]   recovered: connection={conn}, DHT nodes={dht}")
+            recovered()
             return True
     log(f"[WARN] qBittorrent still has no peers (connection={conn}, "
         f"DHT nodes={dht})")
-    alert(f"qBittorrent can't reach any peers (connection={conn}, DHT "
-          f"nodes={dht}) even after rebinding its port — check the vpn jail")
+    if was_down:
+        log("[SKIP] alert already sent for this outage")
+    else:
+        try:
+            os.makedirs(os.path.dirname(down_flag), exist_ok=True)
+            open(down_flag, "w").write(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
+        except OSError:
+            pass
+        alert(f"qBittorrent can't reach any peers (connection={conn}, DHT "
+              f"nodes={dht}) even after rebinding its port and restarting "
+              f"DHT — check the vpn jail")
     return False
 
 
