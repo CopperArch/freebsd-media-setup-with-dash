@@ -149,16 +149,27 @@ _FOREIGN_MARKERS = [
     r"\b(it|ar|fr|es|de|ru|hi|tr|pl|pt|ua|ko|ja|zh|nl|sv|fa|ur)[\s._-]en\b",
     r"\ben[\s._-](it|ar|fr|es|de|ru|hi|tr|pl|pt|ua|ko|ja|zh|nl|sv|fa|ur)\b",
 ]
+# A release that is explicitly an English dub. The *arrs tag "DUBBED"
+# releases with the film's ORIGINAL language (e.g. Chinese), so without this
+# exception the language CFs below rejected every English dub of a foreign
+# film. Not when DUAL/MULTI is in the title (original track too), not
+# "ENG SUBS" (foreign audio, English subtitles).
+ENGLISH_DUB_RE = (r"^(?!.*\b(dual|multi)\b)"
+                  r"(?=.*\b(dubbed|eng|english)\b(?![\s._-]*subs?\b))")
+_ENGLISH_DUB_SPEC = {
+    "name": "Not an English dub", "implementation": "ReleaseTitleSpecification",
+    "negate": True, "required": True,
+    "fields": [{"name": "value", "value": ENGLISH_DUB_RE}]}
 ENGLISH_ONLY_FORMATS = {
     "Not English": [{
         "name": "English", "implementation": "LanguageSpecification",
         "negate": True, "required": True,
-        "fields": [{"name": "value", "value": 1}]}],
+        "fields": [{"name": "value", "value": 1}]}, _ENGLISH_DUB_SPEC],
     "Foreign Audio Present": [{
         "name": "Any non-English track", "implementation": "LanguageSpecification",
         "negate": False, "required": True,
         "fields": [{"name": "value", "value": 1},
-                   {"name": "exceptLanguage", "value": True}]}],
+                   {"name": "exceptLanguage", "value": True}]}, _ENGLISH_DUB_SPEC],
     "Foreign Language Markers": [{
         "name": p, "implementation": "ReleaseTitleSpecification",
         "negate": False, "required": False,
@@ -225,6 +236,12 @@ def reconcile_english_only(arr, name):
     fixed = []
     for qp in profiles:
         changed = False
+        # Radarr only: profile language "Original" rejects every English or
+        # dubbed release of a foreign-language film. "Any" (-1) lets the
+        # English-only CFs decide instead.
+        if "language" in qp and qp["language"].get("id") != -1:
+            qp["language"] = {"id": -1, "name": "Any"}
+            changed = True
         for item in qp.get("formatItems", []):
             if item["format"] in ids and item.get("score") != ENGLISH_ONLY_SCORE:
                 item["score"] = ENGLISH_ONLY_SCORE
@@ -290,10 +307,20 @@ def _save_wanted_state(st):
         log(f"[WARN] could not write {WANTED_STATE} ({e})")
 
 _FOREIGN_CF_NAMES = set(ENGLISH_ONLY_FORMATS)
-# A release that includes an English track. DUAL from a streaming source is
-# original + English; "ENG"/"English" as an audio tag. MULTI alone is NOT
-# trusted (French groups' MULTI is usually French + original, no English).
-_HAS_ENGLISH_RE = re.compile(r"\b(dual|eng|english)\b(?![\s._-]*sub)", re.I)
+# DUAL releases are not accepted: "DUAL" often means two NON-English tracks
+# (e.g. Turkish + Chinese), and "Hindi English" style dual-audio carries a
+# foreign track too. Only an explicit English dub (ENGLISH_DUB_RE) with NO
+# foreign-language marker in the title qualifies.
+class _EnglishDubOnly:
+    _dub = re.compile(ENGLISH_DUB_RE, re.I)
+    _foreign = [re.compile(p, re.I) for p in _FOREIGN_MARKERS]
+
+    def search(self, title):
+        return bool(self._dub.search(title)) and not any(
+            f.search(title) for f in self._foreign)
+
+
+_HAS_ENGLISH_RE = _EnglishDubOnly()
 _CF_REJECT_RE = re.compile(r"Custom Formats? (.+?) ha(?:s|ve) score", re.I)
 
 
@@ -332,7 +359,10 @@ def _fallback_ok(rel):
             qual_ok = False
             continue
         return None
-    return (qual_ok,) if foreign else None
+    # An English dub is no longer rejected by the language CFs (they carry
+    # the ENGLISH_DUB_RE exception), so low seeders / 720p are now the only
+    # reasons it was turned down; any tolerated rejection qualifies.
+    return (qual_ok,)
 
 
 def _iso_age_h(iso):
