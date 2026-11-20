@@ -235,9 +235,11 @@ shown as "Custom VPN".
    and a yellow ★ with the IMDb rating on every movie, series and season),
    and keeps
    every Sonarr/Radarr profile English-only (any release with a non-English
-   audio track is rejected; a foreign-original title still missing 6 hours
-   after it was added or aired falls back to its best DUAL/English-dub
-   release).
+   audio track is rejected; Radarr profiles use language "Any" so explicit
+   English dubs — DUBBED/ENG, never DUAL/MULTI — of foreign films are
+   allowed, and a foreign-original title still missing 6 hours after it was
+   added or aired falls back to its best English-dub release, even with few
+   seeders).
    The full security pass ends with `intrusion-check.py`: ClamAV over files
    changed in the last day (the whole home folder on Sundays), chkrootkit
    (rkhunter isn't packaged for FreeBSD 15), SSH/sudo/doas and pw(8)
