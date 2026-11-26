@@ -233,7 +233,10 @@ shown as "Custom VPN".
    Jellyfin posters so TV apps show them too (a red **CAM** tag on
    cam/telesync early releases, removed once Radarr upgrades the file,
    and a yellow ★ with the IMDb rating on every movie, series and season),
-   and keeps
+   replaces posters/episode thumbnails that come out **black** (a black
+   `-thumb.jpg` shipped with a download is moved to
+   `recycle-bin/black-thumbs/` on the media pool and the real artwork
+   fetched), and keeps
    every Sonarr/Radarr profile English-only (any release with a non-English
    audio track is rejected; Radarr profiles use language "Any" so explicit
    English dubs — DUBBED/ENG, never DUAL/MULTI — of foreign films are
