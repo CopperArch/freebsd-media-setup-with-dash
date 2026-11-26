@@ -998,6 +998,151 @@ def poster_badges():
         f"{len(cam) if cam is not None else '?'} CAM movie(s), {len(ratings)} with an IMDb rating")
 
 
+# Black posters / episode thumbnails (mirrors the Linux edition, 2026-11-26).
+# Some releases ship a black "<video>-thumb.jpg" next to the file; Jellyfin's
+# local-image provider prefers it over TMDb, so even a full image refresh
+# keeps the black one. A black frame at 200px wide compresses to ~420-480
+# bytes; real artwork is many KB.
+BLACK_THUMB_MAX_BYTES = 600
+# Jail path -> host path: every jail mounts the media pool at /data/media.
+BLACK_THUMB_PATH_MAP = [(c, h) for c, h in (("/data/media", "{{MEDIA_POOL}}"),)
+                        if h.startswith("/")]
+BLACK_THUMB_RECYCLE = (os.path.join(BLACK_THUMB_PATH_MAP[0][1], "recycle-bin",
+                                    "black-thumbs") if BLACK_THUMB_PATH_MAP else "")
+ARTWORK_TYPES = ("Movie", "Series", "Season", "Episode", "BoxSet")
+
+
+def _jail_to_host(path):
+    for c, h in BLACK_THUMB_PATH_MAP:
+        if path.startswith(c + "/"):
+            return h + path[len(c):]
+    return path
+
+
+def _thumb_bytes(item_id, tag):
+    try:
+        return len(jf_request(
+            "GET", f"/Items/{item_id}/Images/Primary?tag={tag}&maxWidth=200").read())
+    except Exception:
+        return -1   # fetch failure: not a black image
+
+
+def _is_black_file(path):
+    """True when ffmpeg measures the image's average brightness as near-black."""
+    try:
+        out = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-i", path, "-vf",
+             "signalstats,metadata=print:key=lavfi.signalstats.YAVG",
+             "-f", "null", "-"], capture_output=True, text=True, timeout=60)
+        m = re.search(r"YAVG=([0-9.]+)", out.stdout + out.stderr)
+        return float(m.group(1)) < 20 if m else True  # unreadable -> treat as junk
+    except Exception:
+        return False
+
+
+def fix_black_thumbnails():
+    """Find posters/thumbnails that are black (or near-empty) and replace them.
+
+    1. Every Movie/Series/Season/Episode/BoxSet Primary image is fetched at
+       200px; anything <= BLACK_THUMB_MAX_BYTES is suspect.
+    2. If that image is a sidecar file in the media pool and ffmpeg confirms
+       it is black, it is MOVED to <pool>/recycle-bin/black-thumbs/<date>/
+       (never deleted), then the item's images are refreshed from TMDb/TVDb.
+    3. Episodes with no online still get a frame grabbed from 40% into their
+       own video; seasons fall back to their series poster.
+    """
+    log("Black thumbnail check (posters/stills that render black):")
+    if not shutil.which("ffmpeg"):
+        log("[SKIP] needs ffmpeg")
+        return
+    try:
+        items = [i for t in ARTWORK_TYPES for i in jf_items(t, "Path")
+                 if (i.get("ImageTags") or {}).get("Primary")]
+    except Exception as e:
+        log(f"[FAIL] can't read Jellyfin library ({e})")
+        return
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(8) as ex:
+        sizes = list(ex.map(lambda i: _thumb_bytes(i["Id"], i["ImageTags"]["Primary"]), items))
+    bad = [i for i, n in zip(items, sizes) if 0 <= n <= BLACK_THUMB_MAX_BYTES]
+    if not bad:
+        log(f"[OK]   {len(items)} images checked, none black")
+        return
+    log(f"[INFO] {len(bad)} black/blank image(s) out of {len(items)}")
+
+    rb = os.path.join(BLACK_THUMB_RECYCLE, time.strftime("%Y%m%d")) if BLACK_THUMB_RECYCLE else ""
+    moved = 0
+    for i in bad:
+        try:
+            imgs = json.load(jf_request("GET", f"/Items/{i['Id']}/Images"))
+            src = next((x.get("Path") for x in imgs
+                        if x.get("ImageType") == "Primary"), "") or ""
+            host = _jail_to_host(src)
+            # Only sidecars in the media pool; Jellyfin's own metadata copies
+            # are replaced by the refresh below.
+            if rb and host != src and os.path.isfile(host) and _is_black_file(host):
+                os.makedirs(rb, exist_ok=True)
+                shutil.move(host, os.path.join(rb, os.path.basename(host)))
+                moved += 1
+            jf_request("POST", f"/Items/{i['Id']}/Refresh?metadataRefreshMode=None"
+                       "&imageRefreshMode=FullRefresh&replaceAllImages=true",
+                       {"Content-Length": "0"})
+        except Exception as e:
+            log(f"[WARN] {i.get('SeriesName') or ''} {i.get('Name')}: {e}")
+    if moved:
+        log(f"[FIX ] moved {moved} black sidecar image(s) to {rb}")
+    time.sleep(60)   # image refreshes are queued
+
+    # Second pass: whatever is still black has nothing online.
+    still = []
+    for i in bad:
+        try:
+            cur = json.load(jf_request("GET", f"/Items?Ids={i['Id']}&Fields=Path"))["Items"][0]
+        except Exception:
+            continue
+        tag = (cur.get("ImageTags") or {}).get("Primary")
+        if tag and _thumb_bytes(i["Id"], tag) > BLACK_THUMB_MAX_BYTES:
+            continue
+        still.append(cur)
+    uploaded = 0
+    for i in still:
+        data = None
+        try:
+            if i.get("Type") == "Episode" and i.get("Path"):
+                vid = _jail_to_host(i["Path"])
+                dur = float(subprocess.run(
+                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                     "-of", "csv=p=0", vid], capture_output=True, text=True,
+                    timeout=60).stdout.strip() or 0)
+                if dur > 0:
+                    out = subprocess.run(
+                        ["ffmpeg", "-v", "error", "-ss", str(dur * 0.4), "-i", vid,
+                         "-frames:v", "1", "-vf", "scale=960:-2", "-q:v", "3",
+                         "-f", "image2", "-"], capture_output=True, timeout=120).stdout
+                    data = out if len(out) > 2000 else None
+            elif i.get("Type") == "Season" and i.get("SeriesId"):
+                data = jf_request("GET", f"/Items/{i['SeriesId']}/Images/Primary?maxWidth=600").read()
+            if data:
+                jf_request("POST", f"/Items/{i['Id']}/Images/Primary",
+                           {"Content-Type": "image/jpeg"}, base64.b64encode(data))
+                uploaded += 1
+        except Exception as e:
+            log(f"[WARN] fallback image failed for {i.get('Name')}: {e}")
+    if uploaded:
+        log(f"[FIX ] {uploaded} item(s) given a video frame / series poster "
+            "(no online artwork)")
+    # Uploaded images only register in ImageTags after a re-index.
+    try:
+        jf_request("POST", "/Library/Refresh", {"Content-Length": "0"})
+    except Exception:
+        pass
+    fixed = len(bad) - len(still) + uploaded
+    log(f"[FIX ] {fixed}/{len(bad)} black image(s) replaced")
+    if len(bad) - fixed > 0:
+        alert(f"{len(bad) - fixed} Jellyfin image(s) are still black after repair "
+              "(no artwork online, needs one set by hand)")
+
+
 def _give_state_to_owner():
     """Run as root (the routine): hand the badge state back to the owner of
     DASHBOARD_HOME so the desktop user's own runs can still write it."""
@@ -1017,7 +1162,8 @@ def _give_state_to_owner():
 
 def main():
     # exe + badges also run hourly (daily-routine.sh --quick); the rest nightly.
-    what = sys.argv[1:] or ["english", "qbit", "exe", "dual", "imax", "badges"]
+    what = sys.argv[1:] or ["english", "qbit", "exe", "dual", "imax",
+                            "blackthumbs", "badges"]
     jails = installed_jails(["qbittorrent", "sonarr", "radarr"])
     if "qbit" in what:
         if "qbittorrent" in jails:
@@ -1055,6 +1201,12 @@ def main():
             imax_upgrade_trickle()
         else:
             log("[SKIP] IMAX upgrades need the radarr jail with an API key")
+    if "blackthumbs" in what:
+        # Before badges, so a replaced poster gets its badges the same run.
+        if "jellyfin" in installed_jails(["jellyfin"]) and JELLYFIN["key"]:
+            fix_black_thumbnails()
+        else:
+            log("[SKIP] black thumbnail check needs the jellyfin jail with an API key")
     if "badges" in what:
         # Poster badges (CAM + IMDb rating); also hourly from --quick so an
         # upgraded movie loses its CAM tag within the hour.
