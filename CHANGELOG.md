@@ -8,6 +8,9 @@ Since 2026-10-09 the number updates by itself: every change merged to
 `.github/workflows/bump-version.yml`, which also adds the change to this
 file. A pull request that edits `VERSION` itself is left as it is.
 
+## 0.6.24 - 2026-11-26
+- media-heal: find and replace black Jellyfin posters/episode thumbnails nightly (#31)
+
 ## 0.6.23 - 2026-11-20
 - English-only: allow explicit English dubs, stop trusting DUAL releases (#30)
 
